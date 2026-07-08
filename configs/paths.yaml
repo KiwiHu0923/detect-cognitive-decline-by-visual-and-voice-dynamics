@@ -1,0 +1,29 @@
+data_root: data/
+
+# IPVS raw layout — group-first (task is encoded in the WAV filename prefix,
+# decoded via FILE CODES.xlsx). Group folders preserve subject grouping for
+# subject-level LOSO. PD is nested under sub-batches (1-5, 6-10, 11-16, 17-28).
+italian_pd_dir: "data/raw/italian_pd/"
+italian_pd_pd_dir: "data/raw/italian_pd/28 People with Parkinson's disease/"
+italian_pd_hc_elderly_dir: "data/raw/italian_pd/22 Elderly Healthy Control/"
+italian_pd_hc_young_dir: "data/raw/italian_pd/15 Young Healthy Control/"
+italian_pd_file_codes: "data/raw/italian_pd/28 People with Parkinson's disease/FILE CODES.xlsx"
+italian_pd_labels: "data/raw/italian_pd/labels.csv"     # built by us: subject_id, group, age, task, file_path
+
+external_dir: data/raw/external/                         # (bonus) NeuroVoz / ParkCeleb if approved
+
+# Demo inputs
+samples_dir: data/samples/
+
+# Processed features
+transcripts_dir: data/processed/transcripts/
+phonation_features_dir: data/processed/phonation_features/
+ddk_features_dir: data/processed/ddk_features/
+prosody_features_dir: data/processed/prosody_features/
+facial_features_dir: data/processed/facial_features/
+cohort_csv: data/processed/cohort.csv        # 28 PD + 22 elderly HC (age-matched by data)
+
+# Evaluation outputs
+results_dir: eval/results/
+figures_dir: eval/results/figures/
+models_dir: eval/models/                                 # fitted Layer-1 classifiers loaded at demo time

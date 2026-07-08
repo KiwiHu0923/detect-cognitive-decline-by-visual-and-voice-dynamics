@@ -1,0 +1,47 @@
+# Whisper — supporting role (reading-task segmentation + optional prosody channel)
+whisper:
+  model: mlx-community/whisper-base-mlx
+  word_timestamps: true
+
+# Phonation channel — sustained vowels, Parselmouth
+phonation:
+  f0_floor_hz: 75         # standard adult male floor
+  f0_ceiling_hz: 500      # standard adult female ceiling
+  min_voicing_seconds: 1.0  # guardrail: skip files with less than this continuously-voiced
+  jitter_period_floor_s: 0.0001
+  jitter_period_ceiling_s: 0.02
+  jitter_max_period_factor: 1.3
+  jitter_max_amplitude_factor: 1.6
+
+# Articulation / DDK channel — /pa/ + /ta/, intensity-envelope peak picking
+ddk:
+  envelope_smoothing_ms: 20     # low-pass window on rectified envelope
+  peak_min_prominence: 0.15     # relative to envelope max
+  peak_min_isi_s: 0.05          # 20 Hz cap — anything faster is not a syllable
+  amplitude_decrement_min_peaks: 8  # need ≥ this many peaks to fit slope
+
+# (Optional) Prosody channel — reading passage
+prosody:
+  min_pause_seconds: 0.25       # matches transcribe.py pause threshold
+
+# Late fusion — score-level weighted vote
+# Weights renormalize over channels that are present (N/A channels drop out).
+fusion:
+  weights:
+    phonation: 0.50
+    ddk: 0.35
+    prosody: 0.00              # bump to ~0.20 if prosody channel is enabled
+    facial: 0.15
+  agreement_threshold: 0.30    # per-channel probs within this → agreement flag = true
+
+# Cohort definition (IPVS) — age-matched by data itself:
+# young HCs have no vowel or DDK recordings, so only the age-matched split is possible.
+cohort:
+  pd_n: 28
+  hc_group: elderly            # 22 subjects, ages 60–77
+
+# Claude report layer
+claude:
+  model: claude-opus-4-7
+  max_tokens: 2048
+  prompt_caching: true

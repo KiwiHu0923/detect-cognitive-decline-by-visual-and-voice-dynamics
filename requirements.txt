@@ -1,0 +1,27 @@
+# ASR (segmentation + optional prosody channel)
+mlx-whisper
+
+# Speech features
+praat-parselmouth        # phonation (jitter/shimmer/HNR/F0) + DDK intensity envelope
+scipy                    # DDK peak picking, signal utilities
+
+# Facial features
+py-feat                  # AUs, emotion, head pose, gaze
+
+# ML / Eval
+scikit-learn
+numpy
+pandas
+matplotlib               # ROC curves + coefficient plots
+
+# LLM
+anthropic
+
+# UI
+gradio
+
+# Utils
+python-dotenv
+pyyaml
+tqdm
+openpyxl                 # read IPVS FILE CODES.xlsx and metadata sheets
