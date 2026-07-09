@@ -1,16 +1,26 @@
 data_root: data/
 
-# IPVS raw layout — group-first (task is encoded in the WAV filename prefix,
-# decoded via FILE CODES.xlsx). Group folders preserve subject grouping for
-# subject-level LOSO. PD is nested under sub-batches (1-5, 6-10, 11-16, 17-28).
-italian_pd_dir: "data/raw/italian_pd/"
-italian_pd_pd_dir: "data/raw/italian_pd/28 People with Parkinson's disease/"
-italian_pd_hc_elderly_dir: "data/raw/italian_pd/22 Elderly Healthy Control/"
-italian_pd_hc_young_dir: "data/raw/italian_pd/15 Young Healthy Control/"
-italian_pd_file_codes: "data/raw/italian_pd/28 People with Parkinson's disease/FILE CODES.xlsx"
-italian_pd_labels: "data/raw/italian_pd/labels.csv"     # built by us: subject_id, group, age, task, file_path
+# NeuroVoz raw layout — a single flat audios/ dir with filenames encoding
+# group (HC/PD), task (A1..U3 for vowels, PATAKA for DDK, ABLANDADA..FREE for
+# reading/speech), and subject ID. Group/task/subject are decoded from the
+# metadata CSVs, not the folder tree.
+neurovoz_dir: "data/raw/neurovoz/data/"
+neurovoz_audios_dir: "data/raw/neurovoz/data/audios/"
+neurovoz_metadata_hc: "data/raw/neurovoz/data/metadata/metadata_hc.csv"
+neurovoz_metadata_pd: "data/raw/neurovoz/data/metadata/metadata_pd.csv"
+neurovoz_transcriptions_dir: "data/raw/neurovoz/data/transcriptions/"
+neurovoz_grbas_dir: "data/raw/neurovoz/data/grbas/"
+neurovoz_labels: "data/raw/neurovoz/labels.csv"     # built by us: subject_id, group, age, sex, task, file_path, UPDRS, H-Y
 
-external_dir: data/raw/external/                         # (bonus) NeuroVoz / ParkCeleb if approved
+external_dir: data/raw/external/                     # (bonus) ParkCeleb if approved
+
+# UFNet smile-classifier assets (facial channel upgrade — see CLAUDE.md Facial section).
+# Trained on ROC-HCI released dataset (1361 subjects, 42 session-level features:
+# 7 OpenFace AUs + 7 MediaPipe geometric signals, each × {mean, var, entropy}).
+ufnet_smile_csv: data/raw/ufnet_smile/facial_dataset.csv
+ufnet_smile_youtube_pd_csv: data/raw/ufnet_smile/youtube_PD_features.csv
+ufnet_smile_splits_dir: data/raw/ufnet_smile/splits/
+ufnet_smile_pretrained_dir: data/raw/ufnet_smile/pretrained/
 
 # Demo inputs
 samples_dir: data/samples/
@@ -21,9 +31,11 @@ phonation_features_dir: data/processed/phonation_features/
 ddk_features_dir: data/processed/ddk_features/
 prosody_features_dir: data/processed/prosody_features/
 facial_features_dir: data/processed/facial_features/
-cohort_csv: data/processed/cohort.csv        # 28 PD + 22 elderly HC (age-matched by data)
+cohort_csv: data/processed/cohort.csv        # analysis cohort: HC age ≥ 50 ∩ has PATAKA ∩ has ≥1 vowel (≈ 49 PD × 46 HC)
 
 # Evaluation outputs
 results_dir: eval/results/
 figures_dir: eval/results/figures/
 models_dir: eval/models/                                 # fitted Layer-1 classifiers loaded at demo time
+smile_pd_classifier: eval/models/smile_pd_lr.joblib      # UFNet-derived smile classifier (facial channel)
+smile_pd_scaler: eval/models/smile_pd_scaler.joblib      # matching StandardScaler for the 42-dim feature vector

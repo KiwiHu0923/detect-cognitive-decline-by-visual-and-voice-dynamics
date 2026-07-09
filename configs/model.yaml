@@ -13,7 +13,7 @@ phonation:
   jitter_max_period_factor: 1.3
   jitter_max_amplitude_factor: 1.6
 
-# Articulation / DDK channel — /pa/ + /ta/, intensity-envelope peak picking
+# Articulation / DDK channel — /pa-ta-ka/ (PATAKA), intensity-envelope peak picking
 ddk:
   envelope_smoothing_ms: 20     # low-pass window on rectified envelope
   peak_min_prominence: 0.15     # relative to envelope max
@@ -34,11 +34,14 @@ fusion:
     facial: 0.15
   agreement_threshold: 0.30    # per-channel probs within this → agreement flag = true
 
-# Cohort definition (IPVS) — age-matched by data itself:
-# young HCs have no vowel or DDK recordings, so only the age-matched split is possible.
+# Cohort definition (NeuroVoz) — HC actively filtered by age for strict matching
+# (PD floor is 41; 4 HC subjects sit below 50 or have missing age).
+# Raw age-matched cohort: 53 PD × 51 HC. Analysis cohort further intersects with
+# subjects that have both PATAKA and ≥1 vowel file → ≈ 49 PD × 46 HC.
 cohort:
-  pd_n: 28
-  hc_group: elderly            # 22 subjects, ages 60–77
+  pd_n: 53
+  hc_age_min: 50              # 51 HC survive; PD range 41–88, HC range 53–86
+  require_task_intersection: [PATAKA]   # subject must also have ≥1 vowel file
 
 # Claude report layer
 claude:

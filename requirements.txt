@@ -7,12 +7,14 @@ scipy                    # DDK peak picking, signal utilities
 
 # Facial features
 py-feat                  # AUs, emotion, head pose, gaze
+mediapipe                # FaceMesh landmarks for UFNet-compatible geometric signals (eye-open, mouth-width, jaw-open, etc.)
 
 # ML / Eval
 scikit-learn
 numpy
 pandas
 matplotlib               # ROC curves + coefficient plots
+imbalanced-learn         # SMOTE for smile classifier training (matches UFNet training recipe)
 
 # LLM
 anthropic
