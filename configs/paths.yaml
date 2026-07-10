@@ -29,7 +29,6 @@ samples_dir: data/samples/
 transcripts_dir: data/processed/transcripts/
 phonation_features_dir: data/processed/phonation_features/
 ddk_features_dir: data/processed/ddk_features/
-prosody_features_dir: data/processed/prosody_features/
 facial_features_dir: data/processed/facial_features/
 cohort_csv: data/processed/cohort.csv        # analysis cohort: HC age ≥ 50 ∩ has PATAKA ∩ has ≥1 vowel (≈ 49 PD × 46 HC)
 

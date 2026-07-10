@@ -1,0 +1,13 @@
+channel,feature,coefficient
+phonation,jitter_local,0.458386712652237
+phonation,jitter_rap,0.0
+phonation,jitter_ppq5,0.0
+phonation,shimmer_local,0.0
+phonation,shimmer_apq5,0.0
+phonation,shimmer_apq11,0.0
+phonation,shimmer_dda,0.0
+phonation,hnr_mean_db,0.028911653063225507
+phonation,f0_mean_hz,0.07413317817390645
+phonation,f0_std_hz,0.017689720649601105
+phonation,f0_range_hz,0.0
+phonation,voicing_fraction,0.0

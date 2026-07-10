@@ -11,7 +11,7 @@ Pivoted from CogniScreen (dementia) → ParkScreen (PD) on 2026-07-07. See CLAUD
 | Day | Theme | Must-ship | Can-cut |
 |-----|-------|-----------|---------|
 | Day 1 (Mon 7/7) | Foundation + pivot | Repo + env + Whisper pipeline running; NeuroVoz downloaded; Parselmouth sanity-checked | — |
-| Day 2 (Tue 7/8) | Dataset swap + feature extraction | IPVS → NeuroVoz swap; Phonation + DDK features for all NeuroVoz samples (age-matched split) | Prosody channel |
+| Day 2 (Tue 7/8) | Dataset swap + feature extraction | IPVS → NeuroVoz swap; Phonation + DDK features for all NeuroVoz samples (age-matched split) | — |
 | Day 3 (Wed 7/9) | **Ablation (never cut)** | Train 3 models (phonation, DDK, phonation+DDK late fusion), subject-level LOSO on NeuroVoz, produce `ablation_table.csv` with real numbers | fancy plots |
 | Day 4 (Thu 7/10) | Facial + Claude layer | py-feat hypomimia extraction + Claude 3-channel report | UI polish |
 | Day 5 (Fri 7/11) | **End-to-end demo (never cut)** | Gradio app: task-matched video upload → full report rendered; held-out NeuroVoz PD sample also runs | advanced UI |
@@ -26,14 +26,14 @@ Pivoted from CogniScreen (dementia) → ParkScreen (PD) on 2026-07-07. See CLAUD
 - [x] Update CLAUDE.md to ParkScreen (PD, phonation+DDK late fusion)
 - [x] Update TODO.md to ParkScreen
 - [x] ~~Download IPVS (593 MB zip → `data/`); extracted to `data/raw/italian_pd/` preserving group folders. 831 WAVs, all subject counts match paper (28 PD + 22 elderly HC + 15 young HC).~~ **SUPERSEDED by NeuroVoz swap (2026-07-08) — see Day 2 admin.**
-- [x] ~~Decode `FILE CODES.xlsx`: vowels VA1/2..VU1/2 (phonation), D1=/pa/ + D2=/ta/ (DDK), B1/B2/FB1/PR1 (reading/prosody).~~ **SUPERSEDED — NeuroVoz filenames self-describe task, no separate decode step needed.**
+- [x] ~~Decode `FILE CODES.xlsx`: vowels VA1/2..VU1/2 (phonation), D1=/pa/ + D2=/ta/ (DDK).~~ **SUPERSEDED — NeuroVoz filenames self-describe task, no separate decode step needed.**
 - [x] ~~Plan adjustment applied:~~ **SUPERSEDED — IPVS-specific age-matching note. NeuroVoz uses explicit HC age ≥ 50 filter.**
 
 ### Repo Setup
 - [x] `git init` repo at `/Users/kiwi/Documents/anthropic_hackathon/`
 - [x] Create folder structure: `src/audio/`, `src/vision/`, `src/fusion/`, `src/report/`, `eval/results/figures/`, `demo/assets/`, `data/processed/`, `data/samples/`, `notebooks/`, `configs/`, `tests/`
 - [x] ~~Rename `data/raw/adresso/` → `data/raw/italian_pd/`; add `vowels/ ddk/ reading/` subdirs~~ **SUPERSEDED — NeuroVoz uses `data/raw/neurovoz/data/audios/` (flat).** `data/raw/backup/` → `data/raw/external/` still applies.
-- [x] Create `data/processed/phonation_features/`, `data/processed/ddk_features/`, `data/processed/prosody_features/`, `data/processed/facial_features/`, `data/processed/transcripts/`, `eval/models/`
+- [x] Create `data/processed/phonation_features/`, `data/processed/ddk_features/`, `data/processed/facial_features/`, `data/processed/transcripts/`, `eval/models/`
 - [x] Add `.gitignore` (excludes `data/`, `.env`, `__pycache__`, `*.wav`, `*.mp4`)
 - [x] Create `.env.example` with `ANTHROPIC_API_KEY=`
 - [x] Create `requirements.txt`
@@ -47,7 +47,7 @@ Pivoted from CogniScreen (dementia) → ParkScreen (PD) on 2026-07-07. See CLAUD
 - [x] `configs/paths.yaml` — all data/output paths
 - [x] ~~Update `configs/paths.yaml` for IPVS layout (vowels/ ddk/ reading/)~~ **SUPERSEDED — updated to NeuroVoz layout 2026-07-08** (`neurovoz_audios_dir`, `neurovoz_metadata_pd`, etc.) + processed feature dirs + `eval/models/` + cohort manifests
 - [x] `configs/model.yaml` — Whisper model, pause threshold, fusion weights, Claude model (`claude-opus-4-7`)
-- [x] Update `configs/model.yaml`: add `phonation:` (F0 75–500 Hz, min voicing 1.0s, jitter/shimmer params), `ddk:` (peak prominence, min ISI 0.05s, envelope smoothing), `prosody:` (min pause 0.25s), per-channel `fusion:` weights (phonation 0.50 / DDK 0.35 / facial 0.15 / prosody 0.00 unless enabled), `cohort:` (primary vs secondary)
+- [x] Update `configs/model.yaml`: add `phonation:` (F0 75–500 Hz, min voicing 1.0s, jitter/shimmer params), `ddk:` (peak prominence, min ISI 0.05s, envelope smoothing), per-channel `fusion:` weights (phonation 0.50 / DDK 0.35 / facial 0.15), `cohort:` (primary vs secondary)
 
 ### Whisper Pipeline (`src/audio/transcribe.py`) — supporting role now, not primary
 - [x] `extract_audio()` — ffmpeg WAV extraction from video
@@ -94,11 +94,6 @@ Pivoted from CogniScreen (dementia) → ParkScreen (PD) on 2026-07-07. See CLAUD
 - [x] Batch script `python -m src.audio.ddk` → `data/processed/ddk_features/per_file.csv` (95 rows) + `per_subject.csv` (95 rows, 49 PD × 46 HC — one PATAKA per subject so they're identical).
 - [x] Sanity check: group-mean directions match PD literature — PD lower DDK rate (5.75 vs 6.49 syl/s), higher ISI mean/CV, lower amp_mean, steeper amp_decrement. Signal is present.
 
-### (Optional) Prosody Features (`src/audio/prosody.py`) — cut first if behind
-- [ ] `extract_prosody_features(whisper_json, wav_path, t0, t1) -> dict`
-- [ ] Speech rate (words/sec), mean pause duration, pause rate/min (from `transcribe_file()` output), F0 variability (SD, semitones — monotonicity marker), F0 range voiced, intensity mean/SD
-- [ ] Batch script: NeuroVoz word/FREE tasks (per subject, use FREE for connected-speech prosody where available) → `data/processed/prosody_features/{subject_id}.npy`
-
 ### Bonus (ahead of schedule) — Facial classifier bootstrapped from UFNet
 - [x] Recon ROC-HCI UFNet repo (https://github.com/ROC-HCI/UFNet, AAAI 2025, MIT). Decoded the 42 features (14 base × mean/var/entropy = 7 OpenFace AUs + 7 MediaPipe geometric signals). Confirmed their smile-only ShallowANN is mathematically a LogReg. Chose reuse their CSV to train, not their pretrained weights.
 - [x] Copy UFNet CSVs + participant splits + pretrained-for-reference into `data/raw/ufnet_smile/` (gitignored). Install `mediapipe` + `imblearn`. Update `requirements.txt` + `configs/paths.yaml`.
@@ -124,23 +119,37 @@ Pivoted from CogniScreen (dementia) → ParkScreen (PD) on 2026-07-07. See CLAUD
 ## Day 3 — Ablation Study (July 9) — NEVER CUT
 
 ### `src/fusion/statistical.py`
-- [ ] Load per-channel feature matrices + subject-level labels + cohort manifest
-- [ ] Per-channel model: LogReg (l2, C tuned via inner CV) OR linear SVM with probability calibration — pick the more robust of the two on primary cohort
-- [ ] Late fusion: per-channel probabilities → average (baseline) OR logistic combiner fitted on per-channel probs
-- [ ] Save fitted classifiers + scalers to `eval/models/{channel}.joblib` for Layer 2 to load at demo time
+- [x] Load per-channel feature matrices + subject-level labels + cohort manifest (`load_channel_matrix` for per-subject, `load_phonation_per_file` for per-file). Pipeline = `StandardScaler → LogisticRegression(C=1.0, l2)`, re-fit per fold via `sklearn.Pipeline` so no scaler leakage.
+- [x] Per-channel model: **LogReg (l2, C=1.0)** chosen over linear SVM. LogReg gives calibrated `predict_proba` directly (needed by fusion + Claude report), matches the smile classifier's model class, and stays interpretable via `coefficients.csv`. Did NOT tune C via inner CV — `C=1.0` was strong enough on both channels; the bottleneck was aggregation, not regularization.
+- [x] Late fusion: per-channel probabilities → **average (unweighted)** AND **AUC-excess weighted** (`w_c ∝ max(0, AUC_c − 0.5)`, normalized over channels present). Rejected a learned meta-combiner because N=95 out-of-fold probs is too little to fit a stable second-stage classifier. Weights land in `configs/model.yaml` — phonation 0.35, DDK 0.65 (see model.yaml comment block for derivation).
+- [x] Save fitted classifiers (fit on full analysis cohort — LOSO is eval-only) to `eval/models/{phonation,ddk}.joblib` + `_meta.json` for Layer 2 demo-time loading.
 
 ### `eval/ablation.py`
-- [ ] Subject-level LOSO on NeuroVoz analysis cohort (≈ 49 PD vs 46 HC — age-matched via HC age ≥ 50 filter, then intersected with subjects having both PATAKA and ≥ 1 vowel). Each subject's ALL files (vowels + PATAKA) held out together — no within-subject leakage.
-- [ ] Metrics: AUC, F1, sensitivity, specificity per model + 95% CI (bootstrap over subjects)
-- [ ] Rows produced:
-  1. Phonation-only
-  2. DDK-only
-  3. Phonation + DDK (late fusion)
-  4. (Optional) Phonation + DDK + Prosody
-- [ ] Save `eval/results/ablation_table.csv`
-- [ ] ROC curve plot (one line per model, primary cohort) → `eval/results/figures/roc_curves.png`
-- [ ] Coefficient-magnitude plot per channel (models are linear → interpretable) → `eval/results/figures/coefficients.png`
-- [ ] `notebooks/03_ablation_results.ipynb` with rendered table + figures
+- [x] Subject-level LOSO on NeuroVoz analysis cohort (**49 PD × 46 HC = 95 subjects**). Two eval regimes both run:
+  - Per-subject LOSO (95 folds, 95 datapoints) — the honest deployment metric
+  - Per-file with `LeaveOneGroupOut(subject_id)` (95 folds, 466 vowel datapoints) — literature-comparable, no leakage
+  Each subject's ALL files (vowels + PATAKA) held out together.
+- [x] Metrics: AUC, F1, sensitivity, specificity per model + subject-level bootstrap 95% CI on AUC (1000 resamples)
+- [x] Rows produced (8 total — see CLAUDE.md → "Ablation table" for numbers):
+  1. Phonation-only (per-subject mean-over-vowels baseline) — AUC 0.567
+  2. DDK-only (PATAKA) — AUC 0.740
+  3. Phonation + DDK (unweighted avg) — AUC 0.722
+  4. Phonation + DDK (AUC-excess weighted) — AUC 0.736
+  5. Phonation per-file (per-file eval, n=466) — AUC 0.603
+  6. Phonation per-file (per-subject eval) — AUC 0.630
+  7. Phonation(per-file) + DDK (unweighted avg) — AUC 0.756
+  8. **Phonation(per-file) + DDK (AUC-excess weighted) — AUC 0.758 (best)**
+- [x] Save `eval/results/ablation_table.csv` (+ `ablation_summary.json` config snapshot, `loso_oof_probs.csv` per-subject OOF probs, `coefficients.csv` per-feature weights)
+- [x] ROC curve plot via `eval/make_plots.py` — 3 headline models + chance line → `eval/results/figures/roc_curves.png`. Fusion curve dominates the clinically-relevant low-FPR zone.
+- [x] Coefficient-magnitude plot per channel → `eval/results/figures/coefficients.png`. **Phonation refit with L1 (`liblinear`, C=0.3) for viz-only** — 4 shimmer variants + 3 jitter variants are collinear at L2; L1 forces sparsity → `jitter_local` dominates (+0.46), all 4 shimmer variants zeroed. DDK stays L2 (no material collinearity at 8 features); `ddk_rate_hz` and `amp_mean` dominate. L2 deployment classifiers in `eval/models/` unchanged. L1 coefficients persisted at `eval/results/coefficients_l1_phonation.csv`.
+- [x] `notebooks/03_ablation_results.ipynb` — 10 cells, executed end-to-end via `jupyter nbconvert --execute`. Renders ablation table (winning row highlighted), embeds both figures, condensed key findings + link back to CLAUDE.md for full detail.
+
+### Optional / stretch (only if ahead of schedule)
+- [ ] **Per-vowel modeling for phonation** — 5 separate LogRegs, one per vowel (A1, A2, I1, O2, U1); per-subject soft vote over the 5 probs → per-subject AUC. Preserves per-vowel differences (PD may crash on /i/ but not /a/). Est. +45–60 min work; hypothesized to add another +0.02–0.05 phonation AUC. Skip if Day 4 (facial + Claude layer) is behind.
+- [ ] **XGBoost head-to-head with LogReg on per-file phonation** — a fair per-file comparison against NeuroVoz's XGBoost baseline. Only if `configs/model.yaml` can accommodate a per-channel `model_class` field cleanly. Skip if pushing schedule.
+
+### Diagnostic experiments run (documented for provenance; code reverted)
+- [x] **log + RobustScaler on phonation** — hypothesis "jitter/shimmer outliers dilate StandardScaler std". Result: phonation-only AUC went 0.567 → 0.534 (worse). Hypothesis rejected. Code reverted to keep `src/fusion/statistical.py` clean. See CLAUDE.md → "Day 3 findings" finding #5.
 
 ---
 
@@ -174,7 +183,7 @@ Pivoted from CogniScreen (dementia) → ParkScreen (PD) on 2026-07-07. See CLAUD
 - [ ] Per-minute rates use kept-duration denominator; hypomimia_score narrative includes detection_rate warning when < 0.80.
 
 ### `src/fusion/llm_fusion.py`
-- [ ] `build_claude_context(phonation_score, ddk_score, prosody_score_or_none, facial_score, facial_summary, transcript_excerpt_or_none) -> str`
+- [ ] `build_claude_context(phonation_score, ddk_score, facial_score, facial_summary, transcript_excerpt_or_none) -> str`
 - [ ] Compute weighted vote: phonation weight highest, DDK next, facial (from smile classifier) mid-low; support N/A on any channel (in-the-wild off-task inputs)
 - [ ] Compute per-channel agreement flag (do speech channels agree with each other? does facial agree with speech consensus?)
 - [ ] **Unit conversion for Claude context (NeuroVoz cross-check finding, 2026-07-08):** jitter and shimmer are stored in ratio units (0.005, 0.044) but clinical convention is percent (0.5%, 4.4%). Convert `× 100` before passing to Claude, and label the units explicitly in the prompt (`"jitter_local_percent"` not `"jitter_local"`). Otherwise Claude may narrate "jitter 0.005 is below detection threshold" — wrong.
@@ -191,7 +200,7 @@ Pivoted from CogniScreen (dementia) → ParkScreen (PD) on 2026-07-07. See CLAUD
 
 ### `src/pipeline.py`
 - [ ] `run_pipeline(video_path) -> report_dict`
-- [ ] Orchestrates: extract_audio → segment_tasks → phonation → ddk → (optional prosody) → facial extract → facial summarize → load fitted Layer-1 classifiers → score per channel → weighted vote → build Claude context → generate report
+- [ ] Orchestrates: extract_audio → segment_tasks → phonation → ddk → facial extract → facial summarize → load fitted Layer-1 classifiers → score per channel → weighted vote → build Claude context → generate report
 - [ ] Return report + per-channel scores + agreement flags (for UI display)
 
 ### `demo/app.py`

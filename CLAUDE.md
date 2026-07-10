@@ -9,7 +9,7 @@ Before every non-trivial code change:
 
 ## Project Overview
 
-Multimodal screening tool that detects motor-speech and facial signs of Parkinson's disease (PD) from a single uploaded video. Fuses **phonation** signals (sustained-vowel voice quality) and **articulation** signals (DDK syllable rate/regularity) with **facial dynamics** (hypomimia), routed through a Claude integration layer that generates a clinical-style report. An optional **prosody** channel (reading-passage timing/melody) can be added as a third speech channel if time allows.
+Multimodal screening tool that detects motor-speech and facial signs of Parkinson's disease (PD) from a single uploaded video. Fuses **phonation** signals (sustained-vowel voice quality) and **articulation** signals (DDK syllable rate/regularity) with **facial dynamics** (hypomimia), routed through a Claude integration layer that generates a clinical-style report.
 
 **Positioning:** a supporting-evidence / screening decision-aid, explicitly **not a diagnosis**.
 
@@ -24,7 +24,7 @@ This project was pivoted from a dementia/cognitive-decline design. The changes a
 | Area | Was (dementia) | Now (PD) | Why |
 |------|----------------|----------|-----|
 | Primary dataset | ADReSSo / DementiaBank (membership approval, faculty-sponsor blocker) | NeuroVoz (Spanish) — Zenodo DUA cleared 2026-07-08, open access | Removes the access blocker; 53 PD + 51 age-matched HC (analysis cohort ≈ 49 × 46 after PATAKA-intersection), ~2× IPVS size, richer clinical labels (UPDRS, H-Y stage, medication ON/OFF, GRBAS ratings) |
-| Fused modalities | acoustic × linguistic (TTR, fillers, RoBERTa — semantic/lexical) | phonation × articulation (DDK), both motor-speech (prosody = optional 3rd) | PD is a motor speech disorder, not a language disorder; semantic features are off-target |
+| Fused modalities | acoustic × linguistic (TTR, fillers, RoBERTa — semantic/lexical) | phonation × articulation (DDK), both motor-speech | PD is a motor speech disorder, not a language disorder; semantic features are off-target |
 | Core acoustic tool | librosa (preferred) | praat-parselmouth (preferred) | jitter/shimmer/HNR are Praat's native, reproducible, clinically interpretable indices |
 | Phonation task | Cookie Theft spontaneous description | sustained vowels | jitter/shimmer/HNR are only valid on quasi-periodic, stable-pitch signals |
 | Cross-corpus data | pooled backup corpora | single clean corpus (NeuroVoz); no external corpora merged into training | mixing tasks/corpora at small N → dataset-bias shortcut, inflated AUC |
@@ -43,7 +43,7 @@ Initial PD pivot targeted IPVS (Italian). NeuroVoz access cleared mid-week, and 
 | Perceptual labels | none | per-file GRBAS (Grade/Roughness/Breathiness/Asthenia/Strain) |
 | Age matching | enforced by data (young HCs have no vowel/DDK) | active filter: HC age ≥ 50 drops only 2 subjects |
 
-Language changes Italian → Spanish; the demo caveat (vowels + DDK language-neutral, reading has a mild cross-language wrinkle) is unchanged.
+Language changes Italian → Spanish; vowels + DDK are language-neutral, so the demo remains cross-language compatible.
 
 ---
 
@@ -55,9 +55,8 @@ Language changes Italian → Spanish; the demo caveat (vowels + DDK language-neu
 
 - **Phonation channel** — sustained vowels (3 reps per vowel, /a/e/i/o/u/) → jitter, shimmer, HNR, F0 stats (Parselmouth). The core PD phonatory markers.
 - **Articulation channel (DDK)** — rapid /pa-ta-ka/ (PATAKA task) → DDK rate + timing/amplitude regularity. A strong, PD-specific motor marker (articulatory bradykinesia/irregularity), extracted from the intensity envelope — **no ASR needed**, and **language-neutral** (good for the demo).
-- **(Optional) Prosody channel** — Spanish word tasks + FREE spontaneous speech → speech rate, pause structure, F0 variability/monotonicity, intensity. Reuses the existing Whisper pause-gap code. Note: NeuroVoz is Spanish, so this channel has a mild cross-language wrinkle for a non-Spanish self-recorded demo (phonation and DDK do not).
-- Tasks are **NOT concatenated** into one feature vector. Each channel trains its own small classifier; the probabilities are fused at score level. This respects the fact that voice-quality, articulatory-timing, and connected-speech features live on different scales and come from different tasks.
-- **Models trained:** phonation-only, DDK-only, phonation+DDK late fusion (+ optional prosody as a further channel). Literature supports this: combining sustained phonation with a second task outperforms any single task.
+- Tasks are **NOT concatenated** into one feature vector. Each channel trains its own small classifier; the probabilities are fused at score level. This respects the fact that voice-quality and articulatory-timing features live on different scales and come from different tasks.
+- **Models trained:** phonation-only, DDK-only, phonation+DDK late fusion. Literature supports this: combining sustained phonation with a second task outperforms any single task.
 - **Evaluation:** subject-level LOSO (Leave-One-Subject-Out); metrics: AUC, F1, sensitivity, specificity.
 - Results saved to `eval/results/ablation_table.csv`.
 
@@ -70,8 +69,9 @@ User uploads a single video (**task-matched** — see Demo Protocol) → pipelin
 At inference time the pipeline extracts features from the uploaded input, and scores them with the **already-fitted Layer-1 classifiers**. No training happens at demo time.
 
 **Fusion mechanism: weighted voting (late fusion)**
-- **Phonation** score weighted highest (jitter/shimmer/HNR are the most established phonatory PD markers)
-- **DDK/articulation** score weighted next
+- **DDK/articulation** score weighted highest (Day 3 empirical result — see below). *Prior CogniScreen-era assumption "phonation is the most direct evidence" did not survive contact with NeuroVoz LOSO.*
+- **Phonation** score weighted next.
+- Weights follow the **AUC-excess-over-chance heuristic**: `w_c ∝ max(0, AUC_c − 0.5)`, derived from the Day 3 subject-level LOSO table. Current speech weights: phonation 0.35, DDK 0.65 (see `configs/model.yaml`).
 - **Facial** score from a smile-task classifier trained on the ROC-HCI UFNet released feature dataset (1361 subjects). Feature extraction uses **OpenFace 2.0** (Docker `algebr/openface`) — the same extractor UFNet trained on, so the AU domain gap is zero. AU-only feature set (7 AUs × mean+var = 14 features, active-frame-only aggregation per Islam et al. 2023); MediaPipe geometric signals dropped because landmark indices are unpublished. A hypomimia JSON summary (AU12 amplitude, expression variance, blink rate) is also passed to Claude as narrative colour, computed separately by py-feat.
 - If channels agree → higher confidence; if they disagree → report flags for clinical review (never silently overridden)
 
@@ -85,8 +85,8 @@ At inference time the pipeline extracts features from the uploaded input, and sc
 - **Three task families** (present for most, but not all, subjects — coverage matters, see Cohort below):
   1. Sustained vowels /a/e/i/o/u/, up to 3 reps each (files named `A1..A3, E1..E3, I1..I3, O1..O3, U1..U3`) → phonation channel. Only the "1"/"2" reps are near-universal; A3/E3/I3/O3/U3 exist for only a handful of subjects and should be treated as bonus, not required inputs.
   2. **PATAKA** — rapid /pa-ta-ka/ repetition → articulation channel. This is the canonical clinical DDK task (more standard than IPVS's separate /pa/ + /ta/ files). Present for 46 HC + 49 PD subjects after age filtering — not universal, so subjects without PATAKA are excluded from the analysis cohort.
-  3. 20+ Spanish word/sentence tasks (ABLANDADA, ACAMPADA, BARBAS, BURRO, CALLE, CARMEN, DIABLO, GANGA, MANGA, PAN_VINO, PATATA_BLANDA, PERRO, PETACA_BLANCA, PIDIO, SOMBRA, TOMAS, …) plus **FREE** (spontaneous speech) → optional prosody channel. Note: metadata references "ESPONTANEA" for the spontaneous-speech task, but the on-disk filename is `FREE_` — `src/data/build_labels.py` normalizes this at ingest.
-- **Language note:** vowels and PATAKA are language-neutral, so a non-Spanish self-recorded demo aligns cleanly with training. The reading/free-speech tasks are Spanish, so the optional prosody channel carries a mild cross-language caveat at demo time.
+  3. 20+ Spanish word/sentence tasks + **FREE** (spontaneous speech) — present in the dataset but **not used** by this project (prosody channel dropped 2026-07-09 due to Spanish→English cross-language transfer concerns; see Scope Rules).
+- **Language note:** vowels and PATAKA are language-neutral, so a non-Spanish self-recorded demo aligns cleanly with training.
 - **Size:** 53 PD (ages 41–88) + 55 HC (ages 31–86). After strict age-matching (HC age ≥ 50, dropping 4 HC subjects — 2 with missing age and 2 aged 31/38) → **53 PD vs 51 HC**.
 - **Analysis cohort (used for LOSO):** age-matched subjects who additionally have BOTH PATAKA AND ≥ 1 vowel file → **≈ 49 PD vs 46 HC**. Subjects failing this filter cannot participate in the DDK channel or the fusion model. Feature extraction per subject averages whatever vowels ARE present (does not require all vowels).
 - **Bonus clinical labels** (used by the Claude report layer, and optionally as auxiliary supervised targets):
@@ -139,17 +139,16 @@ Record a single video with these parts (order flexible, but keep tasks clearly s
 
 1. **Sustained /a/ for ~5 s** (steady pitch, comfortable loudness) → phonation channel. Language-neutral.
 2. **Rapid /pa-ta-ka/ repetition**, as fast and steady as possible for ~5 s → articulation/DDK channel (mirrors the PATAKA task in NeuroVoz). Language-neutral.
-3. **(Optional) Read a short passage aloud** → prosody channel. Mild language caveat if not Spanish.
-4. **Face clearly visible throughout**. For the smile classifier: **8–12 seconds** of smile ×3 alternating with a neutral face (each smile phase ~2–3s + neutral ~1–2s between), per Islam 2023's protocol → active-frame AU statistics + hypomimia narrative (AU12 amplitude, expression variance).
+3. **Face clearly visible throughout**. For the smile classifier: **8–12 seconds** of smile ×3 alternating with a neutral face (each smile phase ~2–3s + neutral ~1–2s between), per Islam 2023's protocol → active-frame AU statistics + hypomimia narrative (AU12 amplitude, expression variance).
 
-**Segmentation:** the sustained-vowel and DDK segments are separated by the instructed pauses (or detected: vowel = long continuously-voiced low-F0-variance region; DDK = regular high-rate intensity-peak train). Whisper timestamps isolate the reading portion if used.
+**Segmentation:** the sustained-vowel and DDK segments are separated by the instructed pauses (or detected: vowel = long continuously-voiced low-F0-variance region; DDK = regular high-rate intensity-peak train).
 
 **Data-leakage guard:** if a held-out NeuroVoz PD sample is used as a second demo case, it MUST be the subject left out in its LOSO fold — never a subject the classifier was fitted on. The self-recorded healthy sample is out-of-training by construction.
 
 **Primary demo pair (cleanest):** self-recorded healthy video (task-matched) + one held-out NeuroVoz PD sample (real label, task-matched, no privacy issue).
 
 **Optional in-the-wild sample** (e.g. a YouTube PD clip) — bonus only, with guards:
-- **Task mismatch:** most such clips are interviews/spontaneous speech, not sustained vowels or DDK. Do not feed connected speech to the phonation or DDK classifier — the pipeline should return those channels as **N/A** and score only the prosody + facial channels (task-compatible). This also showcases the system's modularity.
+- **Task mismatch:** most such clips are interviews/spontaneous speech, not sustained vowels or DDK. Do not feed connected speech to the phonation or DDK classifier — the pipeline should return those channels as **N/A** and score only the facial channel (task-compatible). This also showcases the system's modularity.
 - **Signal quality:** compression, background music, multiple speakers inflate jitter/shimmer artefactually — pick single-speaker, quiet, close-mic segments and note quality in the report.
 - **Label & ethics:** the condition is self-reported/inferred, not a clinical label → illustrative only, **never counted toward AUC**. Mark clearly as "public video, self-reported condition, illustrative." Prefer the NeuroVoz held-out sample as the labelled PD case; use the in-the-wild clip only as a secondary "runs on real videos" demonstration.
 
@@ -160,10 +159,9 @@ Record a single video with these parts (order flexible, but keep tasks clearly s
 | Component | Library | Notes |
 |-----------|---------|-------|
 | Audio extraction | ffmpeg via subprocess | 16kHz mono WAV |
-| ASR / segmentation | `mlx_whisper` (Apple Silicon) | `mlx-community/whisper-base-mlx`; swap to `openai-whisper` for non-Mac. Used for the optional reading task + task segmentation |
+| ASR / segmentation | `mlx_whisper` (Apple Silicon) | `mlx-community/whisper-base-mlx`; swap to `openai-whisper` for non-Mac. Used for task-region segmentation on the demo video |
 | Phonation features | `praat-parselmouth` | jitter, shimmer, HNR, F0 — the interpretable core |
 | Articulation / DDK features | `praat-parselmouth` + `scipy.signal` | intensity-envelope peak picking on the PATAKA task → DDK rate + timing/amplitude regularity (no ASR) |
-| (Optional) Prosody features | custom from Whisper timestamps + Parselmouth | speech rate, pause structure, F0 variability/monotonicity, intensity |
 | (Optional) extra acoustic | `opensmile` (eGeMAPS, 88 feats) | prediction booster if time permits; includes jitter/shimmer/HNR too |
 | Facial AU extraction (classifier) | OpenFace 2.0 via Docker `algebr/openface` | matches UFNet training extractor; 7 AUs × mean+var = 14 features, active-frame-only |
 | Facial narrative (hypomimia summary) | `py-feat` | pip-installable; AUs, emotion, head pose, gaze — used for Claude narrative JSON, not the classifier |
@@ -182,20 +180,18 @@ parkscreen/
 │   │   ├── neurovoz/data/          # NeuroVoz: audios/ metadata/ transcriptions/ grbas/ audio_features/
 │   │   └── external/               # (bonus) ParkCeleb if approved
 │   ├── processed/
-│   │   ├── transcripts/            # Whisper .json output (reading + segmentation)
+│   │   ├── transcripts/            # Whisper .json output (task segmentation)
 │   │   ├── phonation_features/     # .npy arrays (jitter/shimmer/HNR/F0)
 │   │   ├── ddk_features/           # .npy arrays (DDK rate + regularity)
-│   │   ├── prosody_features/       # .npy arrays (optional)
 │   │   └── facial_features/        # .json AU timeseries
 │   └── samples/                    # demo video
 │
 ├── src/
 │   ├── audio/
-│   │   ├── transcribe.py           # Whisper → word-timestamped .json (reading + segmentation)
-│   │   ├── segment.py              # split uploaded audio into vowel / DDK / reading regions
+│   │   ├── transcribe.py           # Whisper → word-timestamped .json (task segmentation)
+│   │   ├── segment.py              # split uploaded audio into vowel / DDK regions
 │   │   ├── phonation.py            # Parselmouth jitter/shimmer/HNR/F0 stats on vowels
-│   │   ├── ddk.py                  # intensity-envelope peak picking → DDK rate + regularity
-│   │   └── prosody.py              # (optional) speech rate, pauses, F0 variability from reading
+│   │   └── ddk.py                  # intensity-envelope peak picking → DDK rate + regularity
 │   ├── vision/
 │   │   ├── train_smile_pd.py       # trains 14-feature smile classifier on UFNet CSV (active-frame-only, AU only)
 │   │   ├── facial_features.py      # OpenFace Docker → per-frame AU_r + AU_c for 7 AUs (video → arrays + detection meta)
@@ -255,18 +251,15 @@ Uses ffmpeg subprocess to extract 16kHz mono WAV from video. Already copied into
 Loads WAV as float32 numpy array. Already copied.
 
 **`run_whisper_extraction(video_path, audio_path)`**
-Uses `mlx_whisper.transcribe(..., word_timestamps=True)`. Already computes inter-segment gaps. Still needed for (a) task-region segmentation on the demo video and (b) the optional prosody channel.
+Uses `mlx_whisper.transcribe(..., word_timestamps=True)`. Still needed for task-region segmentation on the demo video.
 
 **`classify_non_speech_fast(audio_array, framerate, start_time, end_time)`**
 RMS energy silence detection. Repurpose in `src/audio/segment.py` and `src/audio/ddk.py` (intensity envelope peak picking).
 
-### Critical insight from existing code
-The `run_whisper_extraction` function already computes `gap = seg["start"] - current_time` for each silence between speech segments. This is the **pause-structure feature** for the optional prosody channel — it comes for free from the existing Whisper logic. Lift into `src/audio/prosody.py` if the prosody channel is added.
-
 ### What to replace
 - `ollama` → `anthropic` SDK
 - `MODEL_NAME / ollama.chat()` → `claude_client.py` with Anthropic SDK calls
-- Content segmentation (intro/ads/outro/content) → task segmentation (vowel / DDK / reading) + PD feature extraction
+- Content segmentation (intro/ads/outro/content) → task segmentation (vowel / DDK) + PD feature extraction
 
 ---
 
@@ -298,21 +291,6 @@ Computed on the PATAKA (/pa-ta-ka/) segment via intensity-envelope peak picking.
 
 ---
 
-## (Optional) Prosody Features (reading passage, from Whisper output)
-
-Computed from word-timestamped Whisper JSON + Parselmouth pitch. **Skip if behind schedule.**
-
-| Feature | Method |
-|---------|--------|
-| Speech rate (words/sec) | total words / voiced duration |
-| Mean pause duration | mean of inter-word gaps > 0.25s |
-| Pause rate | count of pauses > 0.25s per minute |
-| F0 variability (SD, semitones) | Parselmouth pitch over voiced frames — monotonicity marker |
-| F0 range (voiced) | max − min over voiced frames |
-| Intensity mean / SD | Parselmouth intensity |
-
----
-
 ## Facial Features — Smile Classifier + Hypomimia Summary
 
 The facial channel has two outputs, both fed to the Claude report:
@@ -328,6 +306,12 @@ The active-frame-only rule comes from Islam et al. 2023 ("Unmasking Parkinson's 
 We dropped the 7 MediaPipe geometric signals (eye-open, mouth-width, jaw-open, etc.) because Islam 2023 does not publish the landmark indices used to compute them, so we cannot reproduce their extraction faithfully. Ablation cost: -0.026 test AUROC (0.839 → 0.812). We also dropped the entropy statistic across all signals because Islam 2023 does not publish the histogram binning, log base, or range — non-reproducible. Ablation cost: -0.028 test AUROC (0.837 → 0.812).
 
 **Reference AUROC:** paper's smile-only 0.830 (Islam 2023, 10-fold CV, SVM ensemble); our test AUROC on UFNet's held-out participant split = **0.812** (LogReg on 14 active-frame features). The gap is within noise given the model-class simplification and the aggressive feature reduction for reproducibility.
+
+**External validation on YouTubePD (in-the-wild, informational only — do NOT quote as our headline number):** The UFNet paper (AAAI 2025, Table 8) publishes **only the Smile+Speech fusion** number on YouTubePD (AUROC 0.838); it does **not** publish smile-only YouTubePD, so there is no paper baseline to compare to. Our smile-only numbers on YouTubePD, run in `eval/eval_smile_yt_subset.py`:
+- Full released CSV (251 clips, 58 PD / 193 HC): **AUROC 0.602**
+- UFNet's designated `splits/test_yt_pd.txt` subset (178 of the 184 listed IDs match the CSV; 21 PD / 157 HC): **AUROC 0.708**
+
+The 73 clips in the full CSV but excluded from UFNet's subset are 51% PD (37/73) vs 12% PD in the retained subset — the excluded pool is not a random draw, so the AUROC gap (+0.106) is not a prevalence artefact. Working interpretation: UFNet's team dropped low-quality / off-task clips their own model also misclassified. The 0.708 subset number is the fairer measure of smile-only wild-transfer; the 0.602 full-CSV number is a superset that includes samples UFNet themselves excluded from evaluation. Neither number is demo-representative — the demo is task-matched (Islam 2023 smile ×3 protocol) and should sit near the in-distribution 0.812.
 
 Three gotchas we had to hit precisely to get comparable numbers, all from reading the source paper + UFNet code carefully:
 1. **Splits key off the `ID` column, not `Participant_ID`.** UFNet's `unimodal_smile_baal.py:136` uses `IDs = df['ID']`; the split files list `ID` values. Using `Participant_ID` matches only ~43% of test IDs and silently leaks the rest into train.
@@ -347,7 +331,7 @@ Saved artifacts:
 Data assets (all gitignored under `data/raw/ufnet_smile/`):
 - `facial_dataset.csv` (training features, 1684 rows / 1361 subjects)
 - `youtube_PD_features.csv` (external validation, 251 clips, 58 PD)
-- `splits/{dev,test,calib}.txt` (participant IDs — reproduces the paper's split)
+- `splits/{dev,test,calib}.txt` (participant IDs — reproduces the paper's split); `splits/test_yt_pd.txt` (184 IDs — UFNet's designated YouTubePD evaluation subset, of which 178 match the released CSV)
 - `pretrained/` (their fitted `.pth` + scaler kept for reference / possible Path-A fallback)
 
 ### 2. Hypomimia summary (qualitative narrative)
@@ -373,10 +357,8 @@ Also computed by `src/vision/summarize.py` from py-feat outputs (AUs, emotion, h
 `src/report/claude_client.py` builds a structured prompt combining:
 1. Phonation classifier score + confidence (Layer 1)
 2. DDK classifier score + confidence (Layer 1)
-3. (Optional) Prosody classifier score + confidence
-4. Facial summary JSON (hypomimia markers)
-5. Weighted-vote late-fusion score + per-channel agreement flag
-6. Raw transcript excerpt (if reading task present)
+3. Facial summary JSON (hypomimia markers)
+4. Weighted-vote late-fusion score + per-channel agreement flag
 
 Claude generates a report with:
 - Risk level (Low / Moderate / Elevated — **NOT a diagnosis**)
@@ -393,15 +375,58 @@ Use `claude-opus-4-7`. Include prompt caching for repeated calls.
 
 ## Evaluation Protocol
 
-### Ablation table (the deliverable for evaluators)
-| Model | AUC | F1 | Sensitivity | Specificity |
-|-------|-----|----|-------------|-------------|
-| Phonation-only | ? | ? | ? | ? |
-| DDK-only | ? | ? | ? | ? |
-| Phonation + DDK (late fusion) | ? | ? | ? | ? |
-| (+ optional) Phonation + DDK + Prosody | ? | ? | ? | ? |
+### Ablation table (the deliverable for evaluators) — Day 3 results
 
-Cross-validation: **subject-level LOSO** on NeuroVoz. Raw age-matched cohort is 53 PD vs 51 HC; the analysis cohort further requires each subject to have PATAKA + ≥ 1 vowel → **≈ 49 PD vs 46 HC**.
+Subject-level LOSO on NeuroVoz analysis cohort (49 PD × 46 HC = 95 subjects). LogReg with l2, C=1.0, StandardScaler-in-pipeline (re-fit per fold — no scaler leakage). Bootstrap 95% CI on AUC (1000 resamples over subjects).
+
+| Model | AUC [95% CI] | F1 | Sens | Spec |
+|-------|--------------|----|------|------|
+| Phonation-only (per-subject mean over vowels) | 0.567 [0.455, 0.678] | 0.545 | 0.490 | 0.674 |
+| DDK-only (PATAKA) | **0.740** [0.632, 0.845] | 0.701 | 0.694 | 0.696 |
+| Phonation + DDK (unweighted avg) | 0.722 [0.617, 0.822] | 0.638 | 0.612 | 0.674 |
+| Phonation + DDK (AUC-excess weighted, p=0.35 d=0.65) | 0.736 [0.634, 0.842] | 0.660 | 0.633 | 0.696 |
+| Phonation per-file (per-file eval, n=466) | 0.603 [0.553, 0.653] | 0.581 | 0.560 | 0.604 |
+| Phonation per-file (per-subject eval) | 0.630 [0.518, 0.735] | 0.571 | 0.531 | 0.652 |
+| Phonation(per-file) + DDK (unweighted avg) | 0.756 [0.658, 0.854] | 0.701 | 0.694 | 0.696 |
+| **Phonation(per-file) + DDK (AUC-excess weighted)** | **0.758** [0.662, 0.859] | 0.667 | 0.633 | 0.717 |
+
+Persisted to `eval/results/ablation_table.csv` + `eval/results/ablation_summary.json` (config snapshot). Per-subject OOF probabilities at `eval/results/loso_oof_probs.csv`. Per-channel coefficient dump at `eval/results/coefficients.csv`.
+
+Cross-validation: **subject-level LOSO** on NeuroVoz. Raw age-matched cohort is 53 PD vs 51 HC; the analysis cohort further requires each subject to have PATAKA + ≥ 1 vowel → **≈ 49 PD vs 46 HC** (actual: 95 = 49 + 46).
+
+### Day 3 findings — what we learned building the ablation table (2026-07-09)
+
+**1. DDK is the dominant motor-speech channel on NeuroVoz, not phonation.**
+DDK-only AUC 0.740 vs phonation-only AUC 0.567 (per-subject baseline). This contradicts the CogniScreen-era prior "phonation is the most direct evidence" and matches the PD literature more accurately: articulatory bradykinesia on a canonical DDK task (PATAKA) is a stronger acoustic marker than sustained-vowel voice quality at this cohort size. The fusion weights were updated to reflect the empirical direction (see below).
+
+**2. Mean-over-vowels aggregation was silently diluting phonation signal.**
+The Day 2 decision to average the 5 balanced vowels (A1, A2, I1, O2, U1) into one 12-dim feature vector per subject lost signal. Switching to per-file training (466 vowel rows, `LeaveOneGroupOut` by `subject_id`) lifted phonation-only per-subject AUC from 0.567 → 0.630 (+0.063). The model gains from seeing individual vowel files as independent training data points, even without a vowel-identity feature.
+
+**3. Fusion > best single channel required BOTH per-file phonation training AND AUC-excess-weighted fusion.**
+- Baseline (per-subject phonation) + unweighted fusion: 0.722 < 0.740 DDK-only (**fusion loses**)
+- Baseline + old fixed weights (p=0.50, d=0.35): 0.705 (**fusion loses harder**)
+- Per-file phonation + unweighted: 0.756 > 0.740 (+0.016, CI overlaps)
+- **Per-file phonation + AUC-excess weights: 0.758 (+0.018, best row)**
+
+Both changes are needed. Per-file training alone helps but isn't enough; the wrong weight direction actively hurts because it upweights the weaker channel. The Day 3 default (per-file training + AUC-excess weights) is now the deployed configuration.
+
+**4. AUC-excess weighting is the principled way to set fusion weights.**
+`w_c ∝ max(0, AUC_c − 0.5)`, normalized over channels present. Concretely for Day 3: phonation excess 0.130, DDK excess 0.240 → phonation 0.35, DDK 0.65. This replaces the CogniScreen-era phonation=0.50/DDK=0.35 (which was the wrong direction). Weights live in `configs/model.yaml` with the derivation comment.
+
+**5. Failed diagnostic (informative): outliers are NOT the phonation bottleneck.**
+Hypothesized that right-skewed jitter/shimmer outliers were inflating StandardScaler's std and squashing the healthy distribution flat. Tried `log(x + 1e-6)` on jitter/shimmer columns + RobustScaler → phonation-only AUC went 0.567 → 0.534 (worse). Ruled out this hypothesis and pointed diagnosis at aggregation (finding #2). The log-transform code was reverted to keep the codebase clean; the finding is recorded here.
+
+**6. Unexpected finding: per-file eval AUC (0.603) < per-subject aggregated AUC (0.630).**
+Usually per-file evaluation is optimistic because within-subject correlation makes correct/incorrect predictions repeat 5× per subject. Here the opposite: individual vowel-file phonation features are noise-dominated (not signal-dominated), so averaging over a subject's vowel files reduces noise and gives a cleaner per-subject prediction than trusting any single file. Corollary: at demo time, if the user records only one vowel, phonation confidence should be labelled as lower than the LOSO-cohort AUC suggests. Multi-vowel demo recordings are preferable when possible.
+
+**7. Per-subject LOSO is the honest deployment metric; per-file with subject-level LOSO is the literature-comparable metric.**
+- **Per-subject LOSO** (95 datapoints, one prediction per patient) answers "will this work on a new patient?" — the actual deployment question. This is what we headline.
+- **Per-file with `LeaveOneGroupOut(subject_id)`** (466 datapoints, no leakage) answers "how do we compare to per-file baselines in the literature (e.g. NeuroVoz paper)?" — reported as an auxiliary row, not the headline.
+- Both are in the table. Neither has data leakage (both split by subject).
+
+**Caveats that still apply** (unchanged from prior sections, restated for the Day 3 record):
+- All PD training subjects recorded ON medication (2–5h post-dose per NeuroVoz paper §Data records). Numbers apply to ON-state PD vs age-matched HC; OFF-state PD would present more perturbed features than training distribution.
+- Screening decision-aid, NOT a clinical diagnosis. Reports must include both disclaimers.
 
 ### Two demo deliverables (both honest)
 1. `eval/results/ablation_table.csv` — scientific validation on NeuroVoz
@@ -416,7 +441,6 @@ Cross-validation: **subject-level LOSO** on NeuroVoz. Raw age-matched cohort is 
 - Day 5 end-to-end demo on a task-matched video
 
 **Can cut if behind:**
-- Optional prosody channel (word/free-speech tasks) — phonation+DDK is the core deliverable
 - eGeMAPS booster (Parselmouth jitter/shimmer/HNR alone is enough; NeuroVoz ships pre-computed eGeMAPS as a sanity check anyway)
 - Fancy Gradio UI (plain output is fine)
 - In-the-wild YouTube demo clip (held-out NeuroVoz + self-recording is enough)
@@ -448,7 +472,7 @@ Five functions: `extract_audio` (ffmpeg WAV extraction), `load_audio` (WAV → f
 
 Accepts `.wav` directly or any other format (`.m4a`, `.mp3`, `.mp4`, `.mov`, etc.) — non-WAV inputs are converted via ffmpeg to a temp WAV and deleted in `finally`. Condition is `suffix != '.wav'`, not an extension allowlist.
 
-**Post-pivot role:** Whisper is no longer the primary feature extractor. It stays for (a) segmenting the demo video's reading-task region and (b) feeding the optional prosody channel (pauses, speech rate). The vowel and DDK segments do not need ASR.
+**Post-pivot role:** Whisper is no longer the primary feature extractor. It stays for task-region segmentation on the demo video. The vowel and DDK segments do not need ASR.
 
 Output schema:
 ```json

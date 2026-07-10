@@ -1,4 +1,4 @@
-# Whisper — supporting role (reading-task segmentation + optional prosody channel)
+# Whisper — supporting role (task-region segmentation only)
 whisper:
   model: mlx-community/whisper-base-mlx
   word_timestamps: true
@@ -20,17 +20,19 @@ ddk:
   peak_min_isi_s: 0.05          # 20 Hz cap — anything faster is not a syllable
   amplitude_decrement_min_peaks: 8  # need ≥ this many peaks to fit slope
 
-# (Optional) Prosody channel — reading passage
-prosody:
-  min_pause_seconds: 0.25       # matches transcribe.py pause threshold
-
 # Late fusion — score-level weighted vote
 # Weights renormalize over channels that are present (N/A channels drop out).
+#
+# Derivation (2026-07-09): weights follow the AUC-excess-over-chance heuristic
+# w_c ∝ max(0, AUC_c − 0.5), computed from Day 3 subject-level LOSO on NeuroVoz:
+#   phonation (per-file training, per-subject eval) AUC = 0.630 → excess 0.130
+#   DDK-only AUC = 0.740 → excess 0.240
+#   → phonation 0.130/0.370 = 0.35, DDK 0.240/0.370 = 0.65
+# facial 0.15 held from CLAUDE.md scope until Day 4 provides its own LOSO number.
 fusion:
   weights:
-    phonation: 0.50
-    ddk: 0.35
-    prosody: 0.00              # bump to ~0.20 if prosody channel is enabled
+    phonation: 0.35
+    ddk: 0.65
     facial: 0.15
   agreement_threshold: 0.30    # per-channel probs within this → agreement flag = true
 

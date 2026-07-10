@@ -1,4 +1,4 @@
-# ASR (segmentation + optional prosody channel)
+# ASR (task-region segmentation only — not a feature extractor)
 mlx-whisper
 
 # Speech features
@@ -21,6 +21,7 @@ anthropic
 
 # UI
 gradio
+reportlab                # PDF report export (demo/report_pdf.py)
 
 # Utils
 python-dotenv
