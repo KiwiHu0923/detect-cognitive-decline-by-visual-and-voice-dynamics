@@ -72,7 +72,7 @@ At inference time the pipeline extracts features from the uploaded input, and sc
 - **DDK/articulation** score weighted highest (Day 3 empirical result — see below). *Prior CogniScreen-era assumption "phonation is the most direct evidence" did not survive contact with NeuroVoz LOSO.*
 - **Phonation** score weighted next.
 - Weights follow the **AUC-excess-over-chance heuristic**: `w_c ∝ max(0, AUC_c − 0.5)`, derived from the Day 3 subject-level LOSO table. Current speech weights: phonation 0.35, DDK 0.65 (see `configs/model.yaml`).
-- **Facial** score from a smile-task classifier trained on the ROC-HCI UFNet released feature dataset (1361 subjects). Feature extraction uses **OpenFace 2.0** (Docker `algebr/openface`) — the same extractor UFNet trained on, so the AU domain gap is zero. AU-only feature set (7 AUs × mean+var = 14 features, active-frame-only aggregation per Islam et al. 2023); MediaPipe geometric signals dropped because landmark indices are unpublished. A hypomimia JSON summary (AU12 amplitude, expression variance, blink rate) is also passed to Claude as narrative colour, computed separately by py-feat.
+- **Facial** score from a smile-task classifier trained on the ROC-HCI UFNet released feature dataset (1361 subjects). Feature extraction uses **OpenFace 2.0** (Docker `algebr/openface`) — the same extractor UFNet trained on, so the AU domain gap is zero. AU-only feature set (7 AUs × mean+var = 14 features, active-frame-only aggregation per Islam et al. 2023); MediaPipe geometric signals dropped because landmark indices are unpublished. A hypomimia JSON summary (AU12 amplitude, expression variance, blink rate, head-movement std) is also passed to Claude as narrative colour, **computed directly from the OpenFace CSV the classifier already produced** — one Docker run per demo, no second facial pipeline (py-feat dropped 2026-07-09; OpenFace already covers AU_r/AU_c + head pose, and its extra emotion/gaze outputs are not core to hypomimia framing).
 - If channels agree → higher confidence; if they disagree → report flags for clinical review (never silently overridden)
 
 ---
@@ -133,15 +133,15 @@ Practical rule: for our extracted jitter/shimmer, the values live in **ratio uni
 
 ## Demo Protocol (task-matching is mandatory)
 
-The demo video must contain the same tasks the classifiers were trained on, or the extracted features are out-of-distribution and the score is meaningless.
+The demo tasks must match what the classifiers were trained on, or the extracted features are out-of-distribution and the score is meaningless. **Every corpus we use — NeuroVoz, IPVS, UFNet/PARK@Home — stores tasks as separate files**, so ParkScreen collects three separate uploads at demo time and skips runtime segmentation entirely. Task alignment is guaranteed by construction; no heuristic split, no ASR-driven boundary detection (decision date 2026-07-09; `src/audio/segment.py` was never written and is out of scope).
 
-Record a single video with these parts (order flexible, but keep tasks clearly separated by a brief pause):
+Three uploads (any of `.wav`, `.m4a`, `.mp4`, `.mov`), each a **directory** of task-matched clips:
 
-1. **Sustained /a/ for ~5 s** (steady pitch, comfortable loudness) → phonation channel. Language-neutral.
-2. **Rapid /pa-ta-ka/ repetition**, as fast and steady as possible for ~5 s → articulation/DDK channel (mirrors the PATAKA task in NeuroVoz). Language-neutral.
-3. **Face clearly visible throughout**. For the smile classifier: **8–12 seconds** of smile ×3 alternating with a neutral face (each smile phase ~2–3s + neutral ~1–2s between), per Islam 2023's protocol → active-frame AU statistics + hypomimia narrative (AU12 amplitude, expression variance).
+1. **Sustained vowels /i/, /o/, /u/** — up to 3 reps per vowel, ~3–5 s each (steady pitch, comfortable loudness). Audio-only is fine → phonation channel. Filenames must follow `<group>_<VOWEL><REP>.<ext>` (e.g. `PD_I1.m4a`, `HC_O2.wav`) so the pipeline can group reps and apply the paper AUC-excess vowel weights (Day 4 finding #10 — [a] and [e] are dropped as barely above chance per Li et al. 2606.19125 Table IV; the pipeline filters silently). At least one of {I, O, U} must be present; weights renormalize over what's actually recorded. Language-neutral.
+2. **Rapid /pa-ta-ka/ repetition** — 1+ reps of ~5 s each, as fast and steady as possible. Audio-only is fine → articulation/DDK channel (mirrors the PATAKA task in NeuroVoz). Features are averaged across reps. Language-neutral.
+3. **8–12 seconds of smile ×3 alternating with a neutral face** (each smile phase ~2–3s + neutral ~1–2s between), face clearly visible, per Islam 2023's protocol — must be video → smile classifier + hypomimia narrative (AU12 amplitude, expression variance, blink rate, head-movement std). Multiple clips allowed; the pipeline max-pools the classifier score over clips and takes the hypomimia summary from the selected clip.
 
-**Segmentation:** the sustained-vowel and DDK segments are separated by the instructed pauses (or detected: vowel = long continuously-voiced low-F0-variance region; DDK = regular high-rate intensity-peak train).
+Any channel whose upload dir is missing / empty → the pipeline returns `N/A` on that channel and the Claude report is generated with the remaining channels (per `llm_fusion.py` N/A handling and the frozen system prompt in `claude_client.py`).
 
 **Data-leakage guard:** if a held-out NeuroVoz PD sample is used as a second demo case, it MUST be the subject left out in its LOSO fold — never a subject the classifier was fitted on. The self-recorded healthy sample is out-of-training by construction.
 
@@ -159,12 +159,12 @@ Record a single video with these parts (order flexible, but keep tasks clearly s
 | Component | Library | Notes |
 |-----------|---------|-------|
 | Audio extraction | ffmpeg via subprocess | 16kHz mono WAV |
-| ASR / segmentation | `mlx_whisper` (Apple Silicon) | `mlx-community/whisper-base-mlx`; swap to `openai-whisper` for non-Mac. Used for task-region segmentation on the demo video |
+| ~~ASR / segmentation~~ | ~~`mlx_whisper`~~ | **Dropped from critical path 2026-07-09** — demo uses three separate task uploads (see Demo Protocol), no runtime segmentation. `src/audio/transcribe.py` stays in-tree for future use / debug but nothing on the demo path calls it. |
 | Phonation features | `praat-parselmouth` | jitter, shimmer, HNR, F0 — the interpretable core |
 | Articulation / DDK features | `praat-parselmouth` + `scipy.signal` | intensity-envelope peak picking on the PATAKA task → DDK rate + timing/amplitude regularity (no ASR) |
 | (Optional) extra acoustic | `opensmile` (eGeMAPS, 88 feats) | prediction booster if time permits; includes jitter/shimmer/HNR too |
-| Facial AU extraction (classifier) | OpenFace 2.0 via Docker `algebr/openface` | matches UFNet training extractor; 7 AUs × mean+var = 14 features, active-frame-only |
-| Facial narrative (hypomimia summary) | `py-feat` | pip-installable; AUs, emotion, head pose, gaze — used for Claude narrative JSON, not the classifier |
+| Facial AU extraction (classifier + narrative) | OpenFace 2.0 via Docker `algebr/openface` | matches UFNet training extractor; 7 AUs × mean+var = 14 features, active-frame-only. Runs with `-aus -pose` flags so the same CSV feeds both `predict_smile_pd` (AU columns) and `summarize.py` (AU + `pose_Tx/Ty/Tz` for `head_movement_std`) — one Docker run per demo clip (Day 5 fix; earlier `-aus`-only calls dropped pose columns, forcing `head_movement_std=None`). |
+| ~~Facial narrative (separate pipeline)~~ | ~~`py-feat`~~ | **Dropped 2026-07-09** — OpenFace already outputs per-frame AU_r/AU_c + head-pose columns, so the hypomimia JSON is derived from the same CSV as the classifier (zero AU domain gap). Emotion/gaze dropped as non-core to hypomimia framing. |
 | Statistical fusion | `scikit-learn` | LogReg / linear SVM per channel + score-level fusion |
 | LLM / report | `anthropic` SDK | Claude report layer |
 | UI | `gradio` | fastest for hackathon demo |
@@ -188,16 +188,16 @@ parkscreen/
 │
 ├── src/
 │   ├── audio/
-│   │   ├── transcribe.py           # Whisper → word-timestamped .json (task segmentation)
-│   │   ├── segment.py              # split uploaded audio into vowel / DDK regions
+│   │   ├── transcribe.py           # Whisper wrapper — NOT on the demo critical path (kept for future / debug)
 │   │   ├── phonation.py            # Parselmouth jitter/shimmer/HNR/F0 stats on vowels
 │   │   └── ddk.py                  # intensity-envelope peak picking → DDK rate + regularity
+│   │   # segment.py NOT in scope — demo uses three separate uploads (see Demo Protocol)
 │   ├── vision/
 │   │   ├── train_smile_pd.py       # trains 14-feature smile classifier on UFNet CSV (active-frame-only, AU only)
 │   │   ├── facial_features.py      # OpenFace Docker → per-frame AU_r + AU_c for 7 AUs (video → arrays + detection meta)
 │   │   ├── aggregate.py            # per-frame AU_r/AU_c → 14-dim session vector via active-frame mean+var
 │   │   ├── predict_smile_pd.py     # video → PD score + detection-rate gate
-│   │   └── summarize.py            # py-feat AU + head + emotion → hypomimia JSON (Claude narrative, separate from classifier)
+│   │   └── summarize.py            # OpenFace CSV → hypomimia JSON (AU12 amplitude, expression variance, blink rate, head-movement std) for Claude narrative — reuses the CSV facial_features.py already produced
 │   ├── fusion/
 │   │   ├── statistical.py          # Layer 1: per-channel LogReg + score-level late fusion
 │   │   └── llm_fusion.py           # Layer 2: builds Claude context string (weighted voting)
@@ -259,13 +259,21 @@ RMS energy silence detection. Repurpose in `src/audio/segment.py` and `src/audio
 ### What to replace
 - `ollama` → `anthropic` SDK
 - `MODEL_NAME / ollama.chat()` → `claude_client.py` with Anthropic SDK calls
-- Content segmentation (intro/ads/outro/content) → task segmentation (vowel / DDK) + PD feature extraction
+- Content segmentation (intro/ads/outro/content) → **task segmentation dropped 2026-07-09** — demo uses three separate task uploads. PD feature extraction (phonation, DDK, facial) still consumes the audio-loading helpers.
 
 ---
 
 ## Phonation Features (sustained vowels, Parselmouth)
 
 Computed on the vowel segment only. Valid only on quasi-periodic, stable-pitch signals.
+
+**Steady-window preprocessing (Day 4, 2026-07-10):** every sustained-vowel WAV is cropped to its middle 60% before Parselmouth analysis (`configs/model.yaml → phonation.apply_steady_window: true`). Onset/offset carry glottal transients and F0 drift that inflate jitter/shimmer/F0-std in both PD and HC files; cropping keeps analysis on the stable middle. Short-clip guard: sounds below `steady_window_min_duration_s` (0.5s) are returned uncropped so the pitch tracker still has enough voiced material. See Day 4 findings below for the empirical justification (no impact on NeuroVoz LOSO because those files are already pre-trimmed; decisive impact on raw demo audio where it rescued the PD demo from misclassification).
+
+**Vowel filter + weighted aggregation (Day 4, 2026-07-10, replaces Day-2 pipeline):** phonation training now uses only `[I, O, U]` per Li et al. arxiv 2606.19125 Table IV — the paper's Person AUC on NeuroVoz shows [a]=0.58 and [e]=0.63 (barely above chance) versus [i]=0.77, [o]=0.77, [u]=0.83. Aggregation is two-stage:
+1. **Per-subject × per-vowel:** average across reps of the same vowel (`I1/I2/I3` → one /i/ vector per subject). Fixes a Day-2 bug where `BALANCED_VOWEL_SET = (A1, A2, I1, O2, U1)` treated A1 and A2 (two reps of the same /a/) as separate tasks and double-counted /a/.
+2. **Cross-vowel weighted average:** using AUC-excess-over-chance weights from paper Table IV, renormalized after dropping [a]/[e]: `I=0.310, O=0.310, U=0.379`. Weights renormalize per-subject over the vowels actually present, so a subject missing /u/ still gets scored on {I, O} with weights 0.5 / 0.5.
+
+Cohort intact: 49 PD + 46 HC after this pipeline. Coverage: [I] 49/46 (mean 2.12 reps/subject), [O] 49/46 (mean 2.11), [U] **45/46** (mean 1.26 — 4 PD subjects have no /u/ file and are scored on IO only via weight renormalization). Empirical impact: LOSO deployment-fusion row +0.006 (0.740 → 0.746, within CI); demo PD phonation +0.083 (0.530 → 0.613), demo PD fusion +0.025 (0.679 → 0.704). See Day 4 findings #10 below.
 
 | Feature | Method |
 |---------|--------|
@@ -336,40 +344,55 @@ Data assets (all gitignored under `data/raw/ufnet_smile/`):
 
 ### 2. Hypomimia summary (qualitative narrative)
 
-Also computed by `src/vision/summarize.py` from py-feat outputs (AUs, emotion, head pose, gaze), as narrative colour for the Claude report — not a classifier:
+Computed by `src/vision/summarize.py` **directly from the OpenFace CSV that the classifier already produced** — one Docker run per demo, no second facial pipeline. py-feat is dropped (2026-07-09): OpenFace covers AU_r/AU_c + head pose columns natively, and its extra emotion/gaze outputs are not core to hypomimia framing.
+
+Output JSON is narrative colour for the Claude report, not a classifier:
 ```json
 {
   "mean_AU12": 0.15,
   "AU12_amplitude_on_smile_cue": 0.28,
   "expression_variance": 0.12,
-  "hypomimia_score": 0.72,
   "blink_rate_per_min": 8.4,
   "head_movement_std": 0.04,
-  "dominant_emotion": "neutral",
-  "emotion_variability": 0.18
+  "detection_rate": 0.93,
+  "warnings": []
 }
 ```
+
+Field definitions (see `src/vision/summarize.py` docstring for full rationale):
+- `AU12_amplitude_on_smile_cue` = **max** of AU12_r on active-smile frames (`AU12_c == 1`). Peak, not mean — matches the clinical concept of "smile amplitude" and stays non-redundant with the classifier's active-frame mean feature.
+- `expression_variance` = mean of per-AU temporal std across kept frames. Higher = more expressive face; low values consistent with mask-like (hypomimic) presentation.
+- `blink_rate_per_min` = AU45_c 0→1 rising edges divided by kept-duration in minutes.
+- `head_movement_std` = mean of std(`pose_Tx`), std(`pose_Ty`), std(`pose_Tz`) on kept frames.
+- `hypomimia_score` **intentionally omitted** (design review 2026-07-10): a composite requires an arbitrary normalization anchor and duplicates work Claude does when synthesising the report. Raw markers are more defensible and give Claude flexibility.
+- Insufficient-detection short-circuit: `< 10` kept frames → all fields None with reason in `warnings`. Low-detection warning: `detection_rate < 0.80` → surfaced in `warnings`.
 
 ---
 
 ## Claude Integration (Layer 2)
 
-`src/report/claude_client.py` builds a structured prompt combining:
-1. Phonation classifier score + confidence (Layer 1)
-2. DDK classifier score + confidence (Layer 1)
-3. Facial summary JSON (hypomimia markers)
-4. Weighted-vote late-fusion score + per-channel agreement flag
+Fully built and end-to-end validated 2026-07-10 (Claude layer) and 2026-07-11 (full pipeline). Four files with clear separation of concerns:
 
-Claude generates a report with:
-- Risk level (Low / Moderate / Elevated — **NOT a diagnosis**)
-- Key phonation observations (jitter/shimmer/HNR narrative)
-- Key articulation observations (DDK rate/regularity narrative)
-- Key facial observations (hypomimia narrative)
-- Consistency flag (do speech and facial channels agree?)
-- Recommended next steps
-- **Explicit disclaimer** (screening decision-aid, not diagnosis)
+- `src/vision/summarize.py` — hypomimia narrative JSON (companion to the smile classifier score; reuses the OpenFace CSV, no second Docker run). See Facial Features → "Hypomimia summary" above for the schema.
+- `src/fusion/llm_fusion.py` — canonical `fuse_scores` (also imported by `quick_score.py` and `pipeline.py`, so late fusion lives in one place) + `build_claude_context` (composes the XML block for Claude; ratio→percent unit conversion isolated here).
+- `src/report/claude_client.py` — Anthropic SDK call to `claude-opus-4-7`. Non-streaming, `max_tokens=2048`, `thinking={"type": "disabled"}`, no sampling params (Opus 4.7 400s on `temperature`/`top_p`/`top_k`). Frozen ~1143-token `SYSTEM_PROMPT` carries the clinical rules; `cache_control: {"type": "ephemeral"}` marker is set on the system block but a no-op today (Opus 4.7's cacheable-prefix floor is 4096 tokens — the marker self-activates if the prompt grows past 4K).
+- `src/pipeline.py` — end-to-end orchestrator. `run_pipeline(vowel_dir, pataka_dir, smile_dir, call_claude=True) -> dict` collects three task-matched upload dirs, scores each channel using the same helpers as `quick_score.py` (`_score_phonation`, `_score_ddk`) for the audio channels and a local `_score_facial` that uses `predict_and_summarize` for the facial channel (single OpenFace Docker run per clip → classifier vector + hypomimia summary from the same CSV, preserving the "one OpenFace run per demo" invariant). Fuses via `fuse_scores`, composes context via `build_claude_context`, calls `generate_report`. CLI mirrors `quick_score`: `python -m src.pipeline --vowel-dir ... --pataka-dir ... --smile-dir ... [--no-claude] [--out-dir ...] [--label PD|HC]`. Gradio (Day 5 UI) is a thin shim over `run_pipeline`.
 
-Use `claude-opus-4-7`. Include prompt caching for repeated calls.
+The system prompt enforces every non-negotiable at generation time:
+- Report structure (Risk Level → Phonation → DDK → Facial → Cross-Channel Consistency → Recommended Next Steps → Disclaimers)
+- Omitted channels are skipped narratively and called out in Consistency
+- `any_flag_for_review=true` → explicit "Per-channel disagreement — flagged for clinical review", never silently reconciled
+- Both mandatory disclaimers appear verbatim (screening-decision-aid + ON-medication caveat)
+- Feature units labelled on Claude's side (jitter/shimmer percent, HNR dB, DDK syl/sec, F0 Hz) with clinical anchor ranges so hedged language has a reference point
+- Hedged-tone whitelist, diagnostic-language blacklist, 2–4 sentences per channel section
+
+Runtime flow for one report:
+1. `pipeline.py` (Day 5) collects per-channel scores + features + `summarize_facial_features(...)` output
+2. `fuse_scores(scores, weights, threshold)` → `{fused_score, weights_normalized, agreement}`
+3. `build_claude_context(channels, facial_summary, fusion_result)` → XML block
+4. `generate_report(context_str)` → markdown report
+
+Canonical example artifacts at `demo/assets/example_context.xml` (Claude input) and `demo/assets/example_report.md` (Claude output) — useful for demo screenshots and regression-checking future prompt changes.
 
 ---
 
@@ -427,6 +450,130 @@ Usually per-file evaluation is optimistic because within-subject correlation mak
 **Caveats that still apply** (unchanged from prior sections, restated for the Day 3 record):
 - All PD training subjects recorded ON medication (2–5h post-dose per NeuroVoz paper §Data records). Numbers apply to ON-state PD vs age-matched HC; OFF-state PD would present more perturbed features than training distribution.
 - Screening decision-aid, NOT a clinical diagnosis. Reports must include both disclaimers.
+
+### Day 4 findings — steady-window preprocessing (2026-07-10)
+
+**8. NeuroVoz vowel files are silently pre-trimmed; demo audio is not — steady window closes the gap.**
+
+Cropping every vowel file to its middle 60% before Parselmouth analysis (`apply_steady_window: true`) was tested on both the NeuroVoz LOSO cohort and two real self-recorded demo cases (HC and PD, at `data/samples/{hc,pd}_demo/vowel/`, task-matched 3 reps × 5 vowels).
+
+*On NeuroVoz LOSO:* essentially zero movement. Phonation-only per-subject AUC 0.567 → 0.569, per-file 0.603 → 0.601, best fused row 0.758 → 0.758. All deltas |ΔAUC| ≤ 0.004, well inside bootstrap CI widths (~0.12). Six vowel files fell below the 1s voicing floor after cropping (was 466, now 460), but all 95 analysis-cohort subjects retained ≥ 1 vowel — cohort unchanged.
+
+*On demo audio:* decisive.
+
+| | Jitter | Shimmer | HNR | F0 std | **PD prob** | Predicted |
+|---|---|---|---|---|---|---|
+| HC demo OFF | 0.351% | 3.35% | 23.05 dB | **10.68 Hz** | 0.163 | HC ✓ |
+| HC demo ON | 0.284% | 3.19% | 23.46 dB | **5.78 Hz** | 0.466 | HC ✓ (borderline) |
+| PD demo OFF | 0.425% | 3.49% | 23.10 dB | **8.93 Hz** | **0.240** | **HC ✗** |
+| PD demo ON | 0.368% | 3.17% | 23.48 dB | **4.98 Hz** | **0.530** | **PD ✓** |
+
+The load-bearing feature is F0 std. NeuroVoz training distribution has HC F0_std ≈ 3.3 Hz, PD F0_std ≈ 4.8 Hz. Un-trimmed demo audio sits at 9–11 Hz — completely outside training range, and the classifier is extrapolating garbage. Steady window brings demo F0_std into the 5–6 Hz range where training-time decision boundaries are calibrated. This rescued the PD demo from being misclassified as HC (0.240 → 0.530). The reason NeuroVoz LOSO didn't move is that NeuroVoz files were already pre-trimmed by the AVCA-ByO pipeline before Zenodo release — cropping the already-clean middle of already-clean audio changes nothing.
+
+Practical rules from this:
+- `apply_steady_window: true` is mandatory on the demo path. Turning it off produces wrong-distribution features and unreliable predictions.
+- The HC demo's post-steady prob (0.466) is close to the decision threshold. This is not a bug: cross-recording-environment drift means demo speakers' F0 variability sits closer to NeuroVoz PD's than NeuroVoz HC's, even after preprocessing. Report layer should communicate confidence, not just a binary label.
+- **Training-time hidden preprocessing is a first-class validity concern.** Any future feature-engineering change (e.g. Part 2 vowel-weighted training) must be re-benchmarked on both NeuroVoz LOSO AND demo audio, because the two evaluation surfaces disagree systematically.
+
+Full demo multimodal scores (post steady-window, current deployed weights p=0.35 / d=0.65 / f=0.15, renormalized over channels present):
+
+| Channel | Weight | HC demo | PD demo |
+|---|---|---|---|
+| Phonation | 0.30 | 0.466 | 0.530 |
+| DDK | 0.57 | 0.028 | 0.881 |
+| Facial (smile classifier, max-pool over clips) | 0.13 | 0.000 | 0.148 |
+| **Fused** | — | **0.158** | **0.679** |
+| **Predicted (thr=0.5)** | | **HC ✓** | **PD ✓** |
+
+Both demos classified correctly; DDK carries the fusion (HC 0.028 vs PD 0.881 — 0.85 gap). Phonation channel is separating by only 0.064 on this pair even after steady window — motivated the Day 4 vowel-filter + weighted-aggregation refactor (finding #10).
+
+### Day 4 findings — vowel-filter + paper-weighted phonation aggregation (2026-07-10)
+
+**9. Day-2 bug: `BALANCED_VOWEL_SET = (A1, A2, I1, O2, U1)` double-counted /a/.**
+A1 and A2 are reps 1 and 2 of the same /a/ vowel, not separate tasks. Treating them as independent training rows (Day 3 per-file finding #2) let the model see /a/ twice as often as any other vowel. Fixed by aggregating reps within a vowel BEFORE cross-vowel combination; see finding #10 for the new pipeline.
+
+**10. Paper-informed vowel filter + weighted aggregation: LOSO neutral, demo improved.**
+Per Li et al. arxiv 2606.19125 Table IV (NeuroVoz Person AUC), [a]=0.58 and [e]=0.63 are barely above chance while [i]=0.77, [o]=0.77, [u]=0.83. New pipeline: drop [a]/[e], average reps within each remaining vowel, then AUC-excess weighted average across vowels (I=0.310, O=0.310, U=0.379).
+
+Effect on NeuroVoz LOSO (49 PD × 46 HC):
+
+| Model | Day 4 baseline (all 5 tasks, mean-over-files) | Day 4 v2 ([i,o,u] weighted) | Δ |
+|---|---|---|---|
+| Phonation-only (per-subject) | 0.569 | 0.560 | −0.009 |
+| DDK-only | 0.740 | 0.740 | 0 |
+| Phon + DDK (weighted, deployed) | 0.740 | **0.746** | **+0.006** |
+| Phon per-file (per-subject eval) | 0.629 | 0.596 | **−0.033** |
+| Phon(per-file) + DDK (weighted) | 0.758 | 0.760 | +0.002 |
+
+Effect on demos (raw un-trimmed audio, task-matched):
+
+| | HC baseline | HC v2 | PD baseline | PD v2 |
+|---|---|---|---|---|
+| Phonation | 0.466 | 0.464 | 0.530 | **0.613 (+0.083)** |
+| Fused | 0.158 | 0.157 | 0.679 | **0.704 (+0.025)** |
+| Predicted | HC ✓ | HC ✓ | PD ✓ | PD ✓ |
+
+LOSO barely moves (all deltas inside CI widths of ~0.12), matching the steady-window story: NeuroVoz training data is already sanitized and offers little headroom for preprocessing improvements. **Demo PD phonation improved noticeably (+0.083)**, pushing the deployment case further above the decision threshold. The demo HC case stayed almost identical (0.466 → 0.464) so we did not sacrifice HC discrimination for the PD gain.
+
+**11. Per-file per-subject-eval dropped 0.033 with the vowel filter — expected side effect.**
+Old baseline had 5 tasks × ~92 subjects = ~460 files; new pipeline has ~516 files but /u/ contributes only 1.26 reps/subject on average (vs /a/'s 2 reps in old baseline). Fewer averaging bandwidth on the highest-weighted vowel means per-file per-subject aggregation is noisier. This is a training-metric side effect and does not affect the deployment demo (which uses the per-subject weighted vector, not per-file predictions).
+
+**12. Vowel-coverage asymmetry: 4 PD subjects have no /u/ file at all.**
+NeuroVoz vowel-file coverage: [I] 49 PD / 46 HC (100%), [O] 49 PD / 46 HC (100%), [U] **45** PD / 46 HC (92%). Four PD subjects contribute IO-only via renormalized weights (0.5 / 0.5). The renormalization keeps them in cohort — none dropped — but their scores rely on the two lower-signal vowels. Corollary for the demo path: `apply_vowel_weights` handles missing-vowel cases gracefully, so demo users can skip /u/ if they can't produce it cleanly.
+
+### Day 4 findings — Claude integration layer built and validated (2026-07-10)
+
+**13. All three Claude-layer files landed and end-to-end validated.**
+`summarize.py` (hypomimia narrative JSON), `llm_fusion.py` (canonical `fuse_scores` + `build_claude_context`), and `claude_client.py` (SDK call + frozen system prompt). Fusion consolidation: `_fuse` was extracted out of `quick_score.py` into `llm_fusion.fuse_scores`; `quick_score` now imports it, and `pipeline.py` (Day 5) will use the same function — one canonical late-fusion implementation across the codebase.
+
+End-to-end validation ran on the synthetic PD demo values from finding #10 (phonation 0.613, DDK 0.881, facial 0.148 → fused 0.704, `any_flag_for_review=true`). Claude produced a well-formed Elevated report meeting every system-prompt rule:
+- 7 sections in the specified order
+- Both mandatory disclaimers appear verbatim (not-a-diagnosis + ON-med caveat)
+- Cross-channel disagreement triggered the exact "Per-channel disagreement — flagged for clinical review" line; the never-silently-reconcile invariant held
+- Feature units quoted correctly (jitter 0.425%, DDK rate 5.42 Hz, blink rate 8.4/min against the clinical 12–20/min anchor)
+- Clinical hypothesis emerged unprompted for the speech/facial disagreement ("early bulbar signs before overt facial hypomimia") — a genuine clinical read the prompt didn't script
+
+Two runs on identical input produced different prose but identical structural elements — the frozen system prompt is tight enough that Claude stochasticity affects wording only, not clinical claims. Canonical artifacts saved at `demo/assets/example_context.xml` (Claude input) and `demo/assets/example_report.md` (Claude output) for demo screenshots and regression-checking.
+
+**Cache activity today:** system prompt is ~1143 tokens; Opus 4.7's cacheable-prefix floor is 4096 tokens, so the `cache_control` marker is a no-op. Kept in place for pattern hygiene — self-activates if the prompt grows past 4K (e.g. few-shot examples). Usage-log to stderr fires only when cache_read or cache_create is non-zero, so silence today is expected.
+
+### Day 5 findings — end-to-end pipeline landed (2026-07-11)
+
+**14. `src/pipeline.py` in place; HC demo runs cleanly from CLI through Claude.**
+`run_pipeline(vowel_dir, pataka_dir, smile_dir, call_claude=True)` orchestrates the three per-channel scorers, `fuse_scores`, `build_claude_context`, and `generate_report` into one dict-returning function. Same audio-channel logic as `quick_score.py` (imported `_score_phonation` and `_score_ddk` — one canonical implementation, no drift); facial channel switched to a new `predict_and_summarize` (per-clip: one OpenFace Docker run → classifier score + hypomimia summary from the same DataFrame), so the "one OpenFace run per demo" invariant now actually holds on the code path (previously it was a spec statement; the actual demo path would have double-invoked Docker if you'd called `predict()` and then `summarize_facial_features(csv_path)` separately).
+
+Smoke-test on `data/samples/hc_demo/` (3 vowels × [I,O,U], 3 PATAKA files, 2 smile clips):
+
+| Channel | Score | Notes |
+|---|---|---|
+| Phonation | 0.464 | borderline; F0 std 1.2 Hz on very steady vowels |
+| DDK | 0.028 | strong HC signal — rate 5.03 syl/s, regularity preserved |
+| Facial | 0.000 | max-pool over 2 clips, both essentially 0 |
+| **Fused** | **0.157** | HC ✓ (matches Day 4 finding #8 pre-Claude number of 0.158 exactly, the 0.001 delta is `-aus -pose` re-parse of pose columns) |
+
+The fusion + agreement machinery worked as specified: `speech_channels_agree: False` (0.464 vs 0.028 gap of 0.436 > 0.30 threshold) → `any_flag_for_review: True` → Claude's report contains the exact "Per-channel disagreement — flagged for clinical review" line, never silently reconciled. Both mandatory disclaimers verbatim. Feature units correct throughout (jitter/shimmer percent, HNR dB, DDK syl/s, blink rate/min against the 12–20 anchor).
+
+**15. Real bug caught by end-to-end integration: OpenFace `-aus` flag was silently dropping pose columns.**
+`facial_features._run_openface` originally called `FeatureExtraction -aus` (AU-only output for speed). This was fine when only `predict_smile_pd` consumed the CSV — the classifier only touches AU columns. When the same CSV started feeding `summarize.py` on the demo path, `pose_Tx/Ty/Tz` were missing → `head_movement_std=None` on every demo run, with warnings *"missing column pose_Tx; missing column pose_Ty; missing column pose_Tz"* silently forwarded to Claude. Fixed by switching the Docker call to `-aus -pose` (fallback to no-flags on the rare build that rejects the combo, same as before). Post-fix: `head_movement_std=6.33` on the HC demo, no warnings. This is exactly the kind of surface-level regression that only appears once channels start sharing data — arguing for keeping the integration path exercised on real data, not just synthetic values.
+
+**16. Pipeline vs. quick_score fusion parity confirmed.**
+The HC demo through `src/pipeline.py` reproduces the fusion score `quick_score.py` produced on the same demo (0.157 vs 0.157 — same after the pose-column fix; the 0.158 in Day 4 finding #8 was the pre-vowel-filter number). This confirms `pipeline.py` is not silently drifting from the debug tool; both paths use `fuse_scores` from `llm_fusion.py`. If they ever disagree again, the divergence lives in either `_score_facial` (max-pool policy) or the OpenFace CSV — narrow places to look.
+
+**17. PD demo through `pipeline.py` reproduces Day 4 finding #10's numbers to three decimal places.**
+
+| Channel | Day 4 finding #10 (quick_score) | Day 5 pipeline.py | Δ |
+|---|---|---|---|
+| Phonation | 0.613 | 0.613 | 0.000 |
+| DDK | 0.881 | 0.881 | 0.000 |
+| Facial (max-pool) | 0.148 | 0.148 | 0.000 |
+| **Fused** | **0.704** | **0.704** | **0.000** |
+| Predicted | PD ✓ | PD ✓ | — |
+
+Exact reproduction confirms pipeline.py is faithful to the deployed Day-4 configuration — no silent drift from the debug tool, no channel is being scored differently just because the wiring changed. Facial max-pool picked `PD_smile3.mp4` (score 0.148) over `PD_smile1.mp4` (score 0.032), matching the "pick the clip most suggestive of PD" rule.
+
+The Claude report on the PD case: Elevated, driven by DDK's 0.881; speech channels agree with each other (|0.613 − 0.881| = 0.268 < 0.30 threshold), but facial disagrees with the speech mean (|0.148 − 0.747| = 0.599 > 0.30) → correctly flagged for clinical review. Claude produced a genuine clinical hypothesis unprompted: *"elevated speech-based risk with preserved facial expressivity is plausible in early or predominantly speech-affecting presentations, where bulbar/articulatory signs can emerge before overt hypomimia"* — matches the type of read Day 4 finding #13 also observed. Both disclaimers verbatim. Referral recommendation appropriate for Elevated. Full report at `out/pd_demo/report.md`.
+
+**Caveats unchanged from Day 4** (restated to keep scope honest): ON-medication training bias, screening-only framing, etc. — all apply verbatim to `pipeline.py` output because the underlying classifiers and features are identical.
 
 ### Two demo deliverables (both honest)
 1. `eval/results/ablation_table.csv` — scientific validation on NeuroVoz

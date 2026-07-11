@@ -15,3 +15,7 @@ build/
 *.log
 .ipynb_checkpoints/
 .DS_Store
+# Pipeline CLI outputs (context.xml, report.md, result.json per demo run)
+/out/
+# Claude Code local state (scheduled_tasks.lock, etc.)
+/.claude/

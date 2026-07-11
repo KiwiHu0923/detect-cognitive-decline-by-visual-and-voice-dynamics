@@ -74,12 +74,15 @@ def _run_openface(work_dir: Path, video_name: str) -> Path:
         "-f", f"/data/{video_name}",
         "-out_dir", "/data/out",
     ]
-    # Try with the AU-only output flag first for speed. If OpenFace rejects it
-    # (unlikely but not guaranteed on all builds), retry without: OpenFace then
-    # emits every output type, which is slower but always produces AU columns.
+    # Request AU + pose output. Pose columns (pose_Tx/Ty/Tz) are consumed by
+    # `summarize.py` for the head_movement_std hypomimia marker, so `-aus`
+    # alone (which drops pose) is not enough on the demo path. Fallback to no
+    # flags on the rare build that rejects the combo: OpenFace then emits
+    # every output type, slower but always produces both AU + pose columns.
     try:
         subprocess.run(
-            base_cmd + ["-aus"], check=True, capture_output=True, timeout=DOCKER_TIMEOUT_SEC
+            base_cmd + ["-aus", "-pose"],
+            check=True, capture_output=True, timeout=DOCKER_TIMEOUT_SEC,
         )
     except subprocess.CalledProcessError:
         subprocess.run(base_cmd, check=True, capture_output=True, timeout=DOCKER_TIMEOUT_SEC)
@@ -89,7 +92,7 @@ def _run_openface(work_dir: Path, video_name: str) -> Path:
     return csv_path
 
 
-def _parse_openface_csv(csv_path: Path) -> tuple[dict[str, np.ndarray], dict]:
+def _parse_openface_csv(csv_path: Path) -> tuple[dict[str, np.ndarray], dict, pd.DataFrame]:
     df = pd.read_csv(csv_path)
     # OpenFace CSV columns are sometimes emitted with a leading space.
     df.columns = [c.strip() for c in df.columns]
@@ -107,6 +110,7 @@ def _parse_openface_csv(csv_path: Path) -> tuple[dict[str, np.ndarray], dict]:
                 "quality_gate_pass": False,
                 "warnings": ["OpenFace produced empty CSV — no face detected in clip"],
             },
+            df,
         )
 
     ts = df["timestamp"].to_numpy() if "timestamp" in df.columns else np.array([])
@@ -156,14 +160,15 @@ def _parse_openface_csv(csv_path: Path) -> tuple[dict[str, np.ndarray], dict]:
         "quality_gate_pass": quality_gate_pass,
         "warnings": warnings,
     }
-    return {"au_r": au_r, "au_c": au_c}, meta
+    return {"au_r": au_r, "au_c": au_c}, meta, df
 
 
 def extract_smile_features(
     video_path: str | Path,
     t0: float | None = None,
     t1: float | None = None,
-) -> tuple[dict[str, np.ndarray], dict]:
+    return_dataframe: bool = False,
+):
     """Extract per-frame AU intensity + presence via OpenFace Docker.
 
     Returns:
@@ -173,6 +178,11 @@ def extract_smile_features(
       }
       meta: {'fps', 'n_frames_total', 'n_frames_used', 'detection_rate',
              'quality_gate_pass', 'warnings'}
+      (optional third element when ``return_dataframe=True``) the raw parsed
+      OpenFace DataFrame — lets a caller feed both the classifier (arrays) and
+      ``summarize_facial_features`` (df) from a single Docker run per clip,
+      preserving the "one OpenFace run per demo" invariant (CLAUDE.md Facial
+      Features).
     AU order matches AUS constant (AU01, AU06, AU12, AU14, AU25, AU26, AU45).
     """
     video_path = Path(video_path).resolve()
@@ -184,7 +194,10 @@ def extract_smile_features(
         clip_name = "clip.mp4"
         _cut_segment(video_path, work / clip_name, t0, t1)
         csv_path = _run_openface(work, clip_name)
-        return _parse_openface_csv(csv_path)
+        arrays, meta, df = _parse_openface_csv(csv_path)
+        if return_dataframe:
+            return arrays, meta, df
+        return arrays, meta
 
 
 def _main() -> None:

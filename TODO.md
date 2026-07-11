@@ -13,7 +13,7 @@ Pivoted from CogniScreen (dementia) → ParkScreen (PD) on 2026-07-07. See CLAUD
 | Day 1 (Mon 7/7) | Foundation + pivot | Repo + env + Whisper pipeline running; NeuroVoz downloaded; Parselmouth sanity-checked | — |
 | Day 2 (Tue 7/8) | Dataset swap + feature extraction | IPVS → NeuroVoz swap; Phonation + DDK features for all NeuroVoz samples (age-matched split) | — |
 | Day 3 (Wed 7/9) | **Ablation (never cut)** | Train 3 models (phonation, DDK, phonation+DDK late fusion), subject-level LOSO on NeuroVoz, produce `ablation_table.csv` with real numbers | fancy plots |
-| Day 4 (Thu 7/10) | Facial + Claude layer | py-feat hypomimia extraction + Claude 3-channel report | UI polish |
+| Day 4 (Thu 7/10) | Facial + Claude layer | ~~facial classifier~~ (done Day 2 bonus); **still needed:** OpenFace-derived hypomimia JSON + Claude 3-channel report + `llm_fusion` context builder | UI polish |
 | Day 5 (Fri 7/11) | **End-to-end demo (never cut)** | Gradio app: task-matched video upload → full report rendered; held-out NeuroVoz PD sample also runs | advanced UI |
 | Day 6 (Sat 7/12) | Freeze + polish | README, limitations page (PD framing), two deliverables ready | new features |
 | Day 7 (Sun 7/13) | Submit | Demo video + pitch deck + submission | — |
@@ -77,10 +77,8 @@ Pivoted from CogniScreen (dementia) → ParkScreen (PD) on 2026-07-07. See CLAUD
 - [x] Build analysis cohort at `data/processed/cohort.csv` via `python -m src.data.build_cohort` — 104 total subject rows (one per subject), 95 in analysis cohort (**49 PD × 46 HC** — hit target exactly). 9 excluded: 8 for missing PATAKA (5 HC, 3 PD), 1 (PD_108) missing both PATAKA and all vowels. cohort.csv keeps excluded subjects with `in_analysis_cohort=False` for audit.
 - [x] **Vowel-balance decision:** restricted to the balanced 5-vowel set (A1, A2, I1, O2, U1). `src/audio/phonation.py::BALANCED_VOWEL_SET` is the source of truth.
 
-### Task Segmentation (`src/audio/segment.py`)
-- [ ] `segment_tasks(wav_path) -> {"vowel": (t0, t1), "ddk": (t0, t1), "reading": (t0, t1) | None}`
-- [ ] Heuristics: vowel = long continuously-voiced region with low F0 variance; DDK = regular high-rate intensity-peak train; reading region isolated via Whisper timestamps (from `transcribe.py`)
-- [ ] For NeuroVoz batch processing, task is known from filename (`{group}_{task}_{subject}.wav`) — segmentation is only needed at demo time. Provide both code paths: `segment_from_manifest(labels_csv)` (NeuroVoz) and `segment_from_audio(wav_path)` (demo).
+### ~~Task Segmentation (`src/audio/segment.py`)~~ — **DROPPED 2026-07-09**
+- Every corpus we use (NeuroVoz, IPVS, UFNet/PARK@Home) stores tasks in separate files; ParkScreen collects three separate uploads at demo time and skips runtime segmentation entirely. No heuristic split, no ASR-driven boundary detection. Task alignment guaranteed by construction. See CLAUDE.md → "Demo Protocol".
 
 ### Phonation Features (`src/audio/phonation.py`)
 - [x] `extract_phonation_features(wav_path, t0=None, t1=None, cfg=None) -> dict` — 12 features via Parselmouth (jitter local/rap/ppq5, shimmer local/apq5/apq11/dda, HNR mean dB, F0 mean/std/range, voicing fraction). Praat "To Pitch (cc)" verified with the full 10-arg signature; failures return `{}`, log warning.
@@ -155,63 +153,94 @@ Pivoted from CogniScreen (dementia) → ParkScreen (PD) on 2026-07-07. See CLAUD
 
 ## Day 4 — Facial Path + Claude Layer (July 10)
 
-### `src/vision/facial_features.py` — per-frame OpenFace extraction
-- [ ] `extract_smile_features(video_path, t0=None, t1=None) -> tuple[dict[str, np.ndarray], dict]`
-- [ ] Returns arrays `{'au_r': np.ndarray[N, 7], 'au_c': np.ndarray[N, 7]}` for 7 AUs (AU01, AU06, AU12, AU14, AU25, AU26, AU45) — intensity 0–5 and presence 0/1
-- [ ] Subprocess wrapper around `docker run --rm --platform linux/amd64 --entrypoint="" -v <tmp>:/data algebr/openface:latest ./build/bin/FeatureExtraction -f /data/clip.mp4 -aus -out_dir /data/out` — falls back to no `-aus` flag if that subflag is rejected
-- [ ] Confidence < 0.75 or `success == 0` frames → NaN masked (per-column NaN, aggregate.py handles). This is defense-in-depth vs Islam 2023 which specifies no explicit frame filter.
-- [ ] Meta: `{fps, n_frames_total, n_frames_used, detection_rate, quality_gate_pass (>= 0.80), warnings[]}` — detection_rate exposed to Claude context per feedback (dropped frames are non-random; must be flagged)
-- [ ] `[t0, t1]` handled by `ffmpeg` pre-cutting a temp clip before Docker invocation
+### Phonation preprocessing — steady-window extraction (added Day 4)
+- [x] Add `apply_steady_window`, `steady_window_frac: 0.6`, `steady_window_min_duration_s: 0.5` to `configs/model.yaml → phonation:`.
+- [x] Add `_apply_steady_window()` helper to `src/audio/phonation.py`; wire into `extract_phonation_features` after the optional t0/t1 crop. Short-clip guard preserves originals below 0.5s.
+- [x] Back up Day 3 baselines: `per_file_day3_baseline.csv`, `per_subject_day3_baseline.csv`, `ablation_table_day3_baseline.csv`.
+- [x] Re-run `python -m src.audio.phonation` → 460 rows (6 files fell below 1s voicing floor after cropping); all 95 analysis-cohort subjects retained.
+- [x] Re-run `python -m eval.ablation` → NeuroVoz LOSO essentially unchanged (all |ΔAUC| ≤ 0.004). Reason: NeuroVoz files were already pre-trimmed by AVCA-ByO before release.
+- [x] A/B test on raw demo audio (`data/samples/{hc,pd}_demo/vowel/`): steady window rescued PD demo from misclassification (0.240 → 0.530). Un-trimmed demo F0_std (9–11 Hz) is completely outside NeuroVoz training range (3–5 Hz); cropping aligns feature distributions. Full multimodal `quick_score` results: HC fused 0.158 (HC ✓), PD fused 0.679 (PD ✓).
+- [x] Update CLAUDE.md → Phonation Features + Day 4 findings section with the empirical justification and demo scores.
 
-### `src/vision/aggregate.py` — session-level 14-dim vector (active-frame-only)
-- [ ] `aggregate(arrays: dict) -> tuple[np.ndarray[14], dict]`
-- [ ] For each of 7 AUs: `active = au_c == 1; mean = au_r[active].mean(); var = au_r[active].var()` — active-frame-only per Islam 2023 §2.
-- [ ] If no active frame for a given AU → fill 0 for both mean and var, add column name to `zero_filled_columns` in meta.
-- [ ] Column order must match `eval/models/smile_pd_columns.json` exactly (retrained at 14 features): `smile_AU01_mean, smile_AU01_var, smile_AU06_mean, ..., smile_AU45_var`
-- [ ] Per-minute features (blink rate etc. for hypomimia summary) use `n_frames_used / fps` as denominator, never `t1 - t0` — dropping frames must not inflate rates.
+### Phonation vowel filter + paper-weighted aggregation (added Day 4, 2026-07-10)
+- [x] Add `included_vowels: [I, O, U]` + `vowel_weights: {I: 0.310, O: 0.310, U: 0.379}` to `configs/model.yaml → phonation:` with derivation comment (AUC-excess from Li et al. arxiv 2606.19125 Table IV, renormalized after dropping [a]/[e]).
+- [x] Retire `BALANCED_VOWEL_SET = (A1, A2, I1, O2, U1)` (Day 2 bug — treated A1/A2 as separate tasks and double-counted /a/). Replace with `INCLUDED_VOWELS_DEFAULT = ("I", "O", "U")` on the vowel-identity axis.
+- [x] Rewrite `batch_extract` in `src/audio/phonation.py`: (1) filter by `task[0] ∈ included_vowels`; (2) per-subject × per-vowel mean-of-reps; (3) `apply_vowel_weights` cross-vowel weighted average with per-subject renormalization for missing vowels.
+- [x] Add `apply_vowel_weights` helper (exported for `quick_score.py` demo use).
+- [x] Back up steady-window baseline CSVs: `per_file_day4_all5tasks.csv`, `per_subject_day4_meanall.csv`, `ablation_table_day4_steady_pre_vowelfix.csv`.
+- [x] Re-run `python -m src.audio.phonation` → per-file 516 rows, per-subject-per-vowel 281 rows, per-subject 95 rows. Coverage: [I] 49/46 (2.12 reps/subject), [O] 49/46 (2.11), [U] 45/46 (1.26) — 4 PD subjects have no /u/ file and are scored on IO only. Cohort unchanged at 49+46.
+- [x] Update `src/fusion/quick_score.py::_score_phonation` to mirror training-time aggregation: filename → vowel letter parse, per-vowel rep averaging, `apply_vowel_weights` cross-vowel combination. Print skipped-file reasons per vowel.
+- [x] Re-run `python -m eval.ablation`: LOSO neutral (phonation-only 0.569 → 0.560; weighted fusion 0.740 → 0.746, +0.006 within CI). Per-file per-subject-eval dropped 0.033 (0.629 → 0.596) — expected side effect of /u/'s lower rep coverage.
+- [x] Re-run `quick_score` on both demos: **HC fused 0.158 → 0.157 (HC ✓)**, **PD fused 0.679 → 0.704 (PD ✓)**. PD demo phonation channel gained +0.083 (0.530 → 0.613), which is the target improvement — the LOSO metric under-detects it because training data is pre-trimmed while demo is out-of-distribution.
+- [x] Update CLAUDE.md → Phonation Features intro + Day 4 findings #9/#10/#11/#12 with results.
 
-### `src/vision/predict_smile_pd.py` — video → PD probability
-- [ ] `predict(video_path, t0=None, t1=None, min_detection_rate=0.80) -> dict{"score", "detection_rate", "quality_gate_pass", "features", "warnings"}`
-- [ ] Load `eval/models/smile_pd_lr.joblib` + `smile_pd_scaler.joblib` + `smile_pd_columns.json`
-- [ ] Pipeline: `facial_features.extract_smile_features` → `aggregate.aggregate` → `scaler.transform` → `clf.predict_proba`
-- [ ] If `quality_gate_pass == False`: return `score=None` with detection_rate reason string. Do not silently emit a score on low-quality input.
+### `src/vision/facial_features.py` — per-frame OpenFace extraction — **DONE as Day 2 bonus (2026-07-08)**
+- [x] `extract_smile_features(video_path, t0=None, t1=None)` returning per-frame `au_r` + `au_c` arrays for 7 AUs + detection meta
+- [x] Docker subprocess wrapper (`algebr/openface:latest`, `--platform linux/amd64`); confidence < 0.75 or `success == 0` masked; `[t0, t1]` pre-cut via ffmpeg before Docker
+- [x] Meta exposes `fps, n_frames_total, n_frames_used, detection_rate, quality_gate_pass, warnings`
+
+### `src/vision/aggregate.py` — session-level 14-dim vector (active-frame-only) — **DONE as Day 2 bonus**
+- [x] Active-frame-only mean+var per Islam 2023 §2; zero-fill for never-active AUs with `zero_filled_columns` in meta
+- [x] Column order matches `smile_pd_columns.json` exactly
+
+### `src/vision/predict_smile_pd.py` — video → PD probability — **DONE as Day 2 bonus**
+- [x] End-to-end video → PD score with detection-rate quality gate, zero-fill warning, and top-3 contributor ranking
+- [x] Smoke-tested on `Personal Video Essays copy.mp4` — correctly withheld / warned per design
 
 ### `src/vision/summarize.py` — hypomimia narrative JSON (companion to classifier)
-- [ ] `summarize_facial_features(video_path) -> dict`
-- [ ] Uses py-feat (separate from OpenFace, to avoid double-Docker cost) for AU + head-pose + emotion outputs → `mean_AU12`, `AU12_amplitude_on_smile_cue`, `expression_variance`, `hypomimia_score` (composite), `blink_rate_per_min`, `head_movement_std`, `dominant_emotion`, `emotion_variability`
-- [ ] Passed to Claude alongside the classifier score for narrative colour, not as a second classifier.
-- [ ] Per-minute rates use kept-duration denominator; hypomimia_score narrative includes detection_rate warning when < 0.80.
+- [x] `summarize_facial_features(openface_csv_path_or_df, min_confidence=0.75) -> dict` — reads the OpenFace CSV that `facial_features.extract_smile_features` already produced (path OR pre-loaded DataFrame). No second Docker run, no py-feat.
+- [x] Fields: `mean_AU12` (kept-frame mean of AU12_r), `AU12_amplitude_on_smile_cue` (**max** of AU12_r on active frames — clinical "amplitude" = peak, and non-redundant with the classifier's active-frame mean feature), `expression_variance` (mean of per-AU temporal std across kept frames — higher = more expressive), `blink_rate_per_min` (AU45_c 0→1 rising edges / kept duration in minutes), `head_movement_std` (mean of std across `pose_Tx/Ty/Tz`), `detection_rate`, `warnings`.
+- [x] **Dropped `hypomimia_score`** per Day 4 design review: composite requires an arbitrary normalization anchor and duplicates work Claude does anyway — leaving the raw markers is more defensible and gives Claude the flexibility to weave them into narrative.
+- [x] Emotion/gaze narrative dropped (OpenFace doesn't emit them, non-core to hypomimia).
+- [x] Per-minute blink rate uses `n_kept_frames / fps / 60` denominator; low-detection warning (`< 0.80`) surfaced; insufficient-detection short-circuit (`< 10` kept frames) returns all-None schema with reason in warnings.
+- [x] Smoke tests: synthetic 60-frame smile arc → AU12 peak recovered to 3 sig figs, blink rate 90/min matches 3 events over 2 s; no-smile CSV → "AU12 never active" warning; low-detection CSV → all fields None + insufficient-detection warning.
 
 ### `src/fusion/llm_fusion.py`
-- [ ] `build_claude_context(phonation_score, ddk_score, facial_score, facial_summary, transcript_excerpt_or_none) -> str`
-- [ ] Compute weighted vote: phonation weight highest, DDK next, facial (from smile classifier) mid-low; support N/A on any channel (in-the-wild off-task inputs)
-- [ ] Compute per-channel agreement flag (do speech channels agree with each other? does facial agree with speech consensus?)
-- [ ] **Unit conversion for Claude context (NeuroVoz cross-check finding, 2026-07-08):** jitter and shimmer are stored in ratio units (0.005, 0.044) but clinical convention is percent (0.5%, 4.4%). Convert `× 100` before passing to Claude, and label the units explicitly in the prompt (`"jitter_local_percent"` not `"jitter_local"`). Otherwise Claude may narrate "jitter 0.005 is below detection threshold" — wrong.
+- [x] Split into two functions: `fuse_scores(scores, weights, agreement_threshold) -> dict` (canonical late-fusion mechanic + pairwise agreement flags) and `build_claude_context(channels, facial_summary, fusion_result) -> str` (XML-tagged Claude prompt block). One-way import: `quick_score.py` uses `fuse_scores`; nothing imports `build_claude_context` yet (pipeline.py will).
+- [x] Weight renormalization + N/A handling: any channel with `None` score drops out, remaining weights renormalize to sum=1. Behaviour identical to old `quick_score._fuse` (validated: 3-channel demo case → `fused=0.704`, matches CLAUDE.md Day 4 table exactly).
+- [x] Agreement flags: `speech_channels_agree` = `|phon - ddk| < threshold`; `facial_agrees_with_speech` = `|facial - mean(speech_present)| < threshold`; `any_flag_for_review` = OR of `not agree`. Undefined comparisons return None (e.g. only one speech channel present → `speech_channels_agree=None`, no flag). Threshold defaults to `configs/model.yaml → fusion.agreement_threshold` (0.30).
+- [x] **Unit conversion isolated to `build_claude_context`** (NeuroVoz cross-check rule): callers pass ratio-unit features (`jitter_local=0.00425`); the function × 100 the seven ratio keys (jitter/shimmer variants) and renames to `_percent` suffix (`jitter_local_percent: 0.425`). HNR/F0/DDK features already in canonical units. Feature curation: only the clinician-facing subset (5 phonation + 4 DDK + 5 hypomimia markers) forwarded to Claude — classifier still sees the full vector.
+- [x] XML tag format (`<phonation status="present">...</phonation>`, `<facial status="omitted" reason="no smile upload"/>`, `<fusion>...</fusion>`) — Claude parses tags reliably and N/A channels are explicit rather than silently missing. `hypomimia_score` composite intentionally not added (see summarize.py rationale).
+- [x] `load_fusion_config()` convenience: `configs/model.yaml → fusion.weights` + `fusion.agreement_threshold` → `(dict, float)` tuple. Saves callers from repeating the yaml parse.
+- [x] Refactor: removed `_fuse` from `quick_score.py`; call site now uses `fuse_scores` + also prints agreement flags. CLI verified (help + import), behaviour unchanged.
+- [x] Smoke tests: 0/1/2/3-channel cases all produce sane fusion + agreement dicts; end-to-end context render on synthetic PD-demo inputs produces the XML block shown in CLAUDE.md example JSON schema (with unit conversion applied).
 
 ### `src/report/claude_client.py`
-- [ ] `generate_report(context_str) -> str` — Anthropic SDK, `claude-opus-4-7`, prompt caching on the system prompt
-- [ ] Report sections: risk level (Low/Moderate/Elevated — NOT diagnosis), per-channel narrative (phonation, DDK, facial), consistency flag, recommended next steps, explicit disclaimer (screening decision-aid, not diagnosis)
-- [ ] **Mandatory ON-medication caveat in every report** (NeuroVoz paper §Data records): PD training subjects were all recorded 2–5h post-dose. System prompt must instruct Claude to include a sentence noting this training bias, separately from the not-a-diagnosis disclaimer. See CLAUDE.md → "Training-distribution bias" section for exact language.
-- [ ] Handle N/A channels gracefully in the prompt (e.g. off-task input skips phonation/DDK narrative sections)
+- [x] `generate_report(context_str) -> str` — Anthropic SDK, `claude-opus-4-7`, non-streaming (`max_tokens=2048`, well under the ~16K streaming threshold), `thinking={"type": "disabled"}` (Opus 4.7 default; set explicitly so future default flips can't silently start thinking on us), no sampling params (Opus 4.7 400s on `temperature`/`top_p`/`top_k`).
+- [x] Frozen system prompt (~1143 tokens, `src/report/claude_client.py::SYSTEM_PROMPT`) with `cache_control: {"type": "ephemeral"}` — marker is a no-op today (Opus 4.7 needs ≥ 4096-token prefix to cache) but self-activates if we ever grow the prompt past 4K. Usage-log to stderr when cache_read or cache_create is non-zero, so we'll see it turn on without touching code.
+- [x] Report structure enforced in system prompt: `## Risk Level` (Low/Moderate/Elevated, explicitly NOT a diagnosis) → `## Phonation` → `## Articulation (DDK)` → `## Facial Expression` → `## Cross-Channel Consistency` → `## Recommended Next Steps` → `## Disclaimers`. Channel sections gated on `status="present"` — omitted channels are skipped in the narrative and called out in the Consistency section.
+- [x] **Both mandatory disclaimers baked into the system prompt verbatim** — not-a-diagnosis + ON-med training caveat. Prompt uses "include BOTH sentences verbatim, in this order" so Claude doesn't paraphrase them into something weaker. Language matches CLAUDE.md → "Training-distribution bias" section.
+- [x] **Consistency-flag rule wired into the system prompt**: "you MUST flag this for clinical review, never silently reconcile" — matches the CLAUDE.md "never silently override" invariant for cross-channel disagreement.
+- [x] Feature-unit reminders in the system prompt (jitter/shimmer already in percent, HNR in dB, DDK rate in syl/s, F0 in Hz) so Claude quotes numbers with correct units. Also includes clinical typical-value anchors (jitter ~0.3–0.5%, DDK rate ≥ 6, blink rate ~12–20/min) so hedged language like "consistent with PD-typical perturbation" has a reference point.
+- [x] Tone constraint: hedged language whitelist ("consistent with", "may suggest", "within the range typical of"), diagnostic-language blacklist ("indicates PD", "shows Parkinson's"), 2–4 sentences per channel section (keeps output well under `max_tokens=2048`).
+- [x] `load_claude_config() -> dict` helper — matches `llm_fusion.load_fusion_config` pattern, saves callers from repeating the yaml parse.
+- [x] `.env` picked up automatically via `python-dotenv` `load_dotenv()` at import time (both `anthropic` and `python-dotenv` already in `requirements.txt`).
+- [x] CLI (`python -m src.report.claude_client <context_file>` or `-` for stdin) for smoke tests without wiring the whole pipeline. Missing-key path exits cleanly with a one-line message, not a stack trace.
+- [x] Smoke tests: import + config load pass; system prompt token count = 1143 (matches design assumption); missing-key CLI path exits with "ANTHROPIC_API_KEY not set — export it or add to .env at repo root." **End-to-end API call not yet run** (requires user to supply `ANTHROPIC_API_KEY` in `.env` or shell env).
 
 ---
 
 ## Day 5 — End-to-End Demo (July 11) — NEVER CUT
 
 ### `src/pipeline.py`
-- [ ] `run_pipeline(video_path) -> report_dict`
-- [ ] Orchestrates: extract_audio → segment_tasks → phonation → ddk → facial extract → facial summarize → load fitted Layer-1 classifiers → score per channel → weighted vote → build Claude context → generate report
-- [ ] Return report + per-channel scores + agreement flags (for UI display)
+- [x] `run_pipeline(vowel_dir, pataka_dir, smile_dir, call_claude=True) -> dict` — three task-matched upload dirs (matches Demo Protocol; runtime segmentation dropped 2026-07-09). Any dir → N/A on that channel and fusion renormalizes. Returns dict of `{scores, channels, channel_meta, facial_summary, fusion, claude_context, report}`.
+- [x] Orchestrates: phonation (`_score_phonation` from `quick_score.py`) → DDK (`_score_ddk`) → facial (new local `_score_facial` uses `predict_and_summarize` for single-Docker-run per clip) → `fuse_scores` → `build_claude_context` → `generate_report`. All shared with `quick_score.py` for one canonical fusion + one canonical per-audio-channel scorer.
+- [x] `--no-claude` flag returns context XML only (debug / API-key-less runs). `--out-dir` writes `context.xml`, `report.md`, `result.json`. `--label PD|HC` prints correct/incorrect after fusion.
+- [x] Bug fixed on the way: `facial_features._run_openface` was calling `-aus` (AU-only output); `summarize.py` needs pose columns for `head_movement_std`. Switched to `-aus -pose`. See Day 5 finding #15.
+- [x] Added `predict_and_summarize` to `predict_smile_pd.py` and `return_dataframe=True` option to `extract_smile_features` — one Docker run per clip yields both the classifier score and the hypomimia summary from the same CSV. Preserves the "one OpenFace run per demo" invariant on the actual code path (previously a spec statement only).
+- [x] Smoke test on `data/samples/hc_demo/` end-to-end (phonation + DDK + facial → fused 0.157 → Claude Low-risk report with disagreement flag + both disclaimers verbatim). See Day 5 finding #14.
+- [x] Rerun end-to-end on `data/samples/pd_demo/` through `pipeline.py`: **fused 0.704 → PD ✓, Elevated report**. Reproduces Day 4 finding #10's per-channel numbers exactly (phonation 0.613 / DDK 0.881 / facial 0.148 / fused 0.704), confirming pipeline.py doesn't silently drift from quick_score.py. Facial ≠ speech mean → correctly flagged. Full artifacts at `out/pd_demo/`. See Day 5 finding #17.
 
-### `demo/app.py`
-- [ ] Gradio UI: single video upload + a clear "record these tasks" instruction panel referencing the Demo Protocol in CLAUDE.md
-- [ ] Progress indicators per pipeline stage
-- [ ] Report display: risk level, per-channel scores, consistency flag, narrative, disclaimer
-- [ ] Off-task channel handling: show "N/A — task not detected" rather than a bogus score
+### `demo/app.py` — Gradio UI
+- [x] Mock UI shell (683 lines): upload → 6-stage progress → 2-tier report (Vocal + Facial cards with collapsible per-channel breakdown), risk grade A/B/C, `New scan` button, MOCK_REPORT fixture
+- [x] `demo/report_pdf.py` (433 lines) — PDF export for the demo report (bonus, ahead of scope)
+- [ ] Wire `analyze()` to real `src/pipeline.py` (currently returns MOCK_REPORT)
+- [ ] Task-recording instruction panel referencing the Demo Protocol in CLAUDE.md (sustained /a/ + PATAKA + smile ×3)
+- [ ] Off-task channel handling in the UI: render "N/A — task not detected" when `pipeline` returns `score=None` on a channel
 
 ### Demo Materials
-- [ ] Record task-matched demo video: sustained /a/ ~5 s → /pa-ta-ka/ ~5 s → (optional) short reading → **8–12 s of smile ×3 alternating with neutral (~2–3s smile + ~1–2s neutral per cycle, per Islam 2023 protocol)** → face visible throughout. Save to `data/samples/self_demo.mp4`.
-- [ ] Prepare held-out NeuroVoz PD sample: pick one PD subject, verify it was the LOSO-held-out fold in Day 3 (no leakage), package their vowel + PATAKA files as a "clip" for the demo. Save to `data/samples/neurovoz_holdout_demo/`.
+- [ ] Record three task-matched clips per Demo Protocol: (a) sustained /a/ ~5 s (audio ok), (b) /pa-ta-ka/ ~5 s (audio ok), (c) 8–12 s of smile ×3 alternating with neutral (video, face visible, per Islam 2023 protocol). Save to `data/samples/self_demo/{vowel,pataka,smile}.{wav|mp4}`.
+- [ ] Prepare held-out NeuroVoz PD sample: pick one PD subject, verify it was the LOSO-held-out fold in Day 3 (no leakage), package their vowel + PATAKA files as the audio channels. Facial channel returns N/A (no video in NeuroVoz). Save to `data/samples/neurovoz_holdout_demo/`.
 - [ ] End-to-end test on both demo cases; screenshot each report
 
 ---
@@ -238,3 +267,28 @@ Pivoted from CogniScreen (dementia) → ParkScreen (PD) on 2026-07-07. See CLAUD
 - [ ] Record demo video (screen capture: upload task-matched video → pipeline → report; then upload held-out NeuroVoz PD sample → report)
 - [ ] Write 2–3 paragraph pitch summary — lead with the pivot rationale (motor-speech disorder → motor-speech features; open-access data → reproducible)
 - [ ] Final submission
+
+---
+
+## Snapshot — What's left after Day 3 close (as of 2026-07-09)
+
+Remaining critical-path work, roughly in dependency order:
+
+1. ~~**`src/vision/summarize.py`**~~ — **DONE 2026-07-10.** ~180 lines, five markers (mean_AU12, AU12_amplitude_on_smile_cue, expression_variance, blink_rate_per_min, head_movement_std) + detection_rate + warnings; `hypomimia_score` dropped as arbitrary/redundant. See Day 4 checklist for design notes.
+2. **`src/pipeline.py`** — end-to-end orchestrator: three uploads (vowel WAV/mp4, PATAKA WAV/mp4, smile mp4) → per-channel score via already-fitted Layer-1 classifiers → weighted vote → Claude context → report. Single entry point for `demo/app.py` to call. Any missing upload → that channel returns N/A.
+3. **Wire `demo/app.py`** — replace `MOCK_REPORT` + mocked progress with real `pipeline.run_pipeline()` calls. UI change: **three upload widgets** (vowel, PATAKA, smile) instead of one, matching how every training corpus stores tasks. Keep the existing 2-tier report layout.
+4. ~~**`src/fusion/llm_fusion.py`**~~ — **DONE 2026-07-10.** Two functions: `fuse_scores` (canonical late-fusion + agreement flags; also used by `quick_score.py`) and `build_claude_context` (XML-tagged prompt block, jitter/shimmer × 100 inside the function). See Day 4 checklist.
+5. ~~**`src/report/claude_client.py`**~~ — **DONE 2026-07-10.** Non-streaming Anthropic SDK call to `claude-opus-4-7`, frozen ~1143-token system prompt with both mandatory disclaimers baked in, `thinking={"type": "disabled"}`, cache marker on system block (no-op today, self-activates past 4K tokens). **End-to-end API call validated 2026-07-10** on the synthetic PD demo case: fused=0.704 → Elevated report, both disclaimers verbatim, disagreement flag triggered exactly as specified. Pure narrative layer — does not affect AUC.
+6. **Demo materials** — record three task-matched self-clips (vowel + PATAKA + smile); package one held-out NeuroVoz PD subject (verified LOSO-held, audio-only → facial N/A) as a second demo case.
+7. **Day 6 polish** — README, limitations page (see Day 6 checklist), Day 7 demo screen-capture + pitch.
+
+**Bonus deliverables from Day 4 end-to-end validation (2026-07-10):**
+- `demo/assets/example_context.xml` — canonical Claude input (the XML block that goes into `generate_report`)
+- `demo/assets/example_report.md` — canonical Claude output for the synthetic PD demo case
+- Useful for pitch-deck illustration ("input → output at a glance") and for regression-checking that future prompt/config changes don't silently alter report format.
+
+**Dropped from scope 2026-07-09:**
+- `src/audio/segment.py` — three separate uploads make runtime segmentation unnecessary. See Day 2 dropped section + CLAUDE.md Demo Protocol.
+- `py-feat` dependency — OpenFace CSV already contains AU_r/AU_c + head-pose columns needed for the hypomimia narrative.
+
+Nice-to-have (skip if behind): per-vowel phonation modeling, XGBoost head-to-head, ParkCeleb cross-lingual check (see ParkCeleb discussion below), in-the-wild YouTube clip demo.

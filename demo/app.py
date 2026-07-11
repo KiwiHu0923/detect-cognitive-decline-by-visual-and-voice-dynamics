@@ -1,104 +1,55 @@
 """ParkScreen — Gradio UI shell.
 
-Pure frontend: no pipeline, no model loading, no Claude call. The Analyze
-button drives a mocked 6-stage progress and renders a fixed MOCK_REPORT so
-the layout, states, and copy can be iterated on independently of the
-Day 3–5 backend work. Replace `analyze()` with the real pipeline once
-`src/pipeline.py` lands.
+Three task-matched upload buckets (vowel / PATAKA / smile) → ``run_pipeline``
+(the real Layer-2 orchestrator in ``src/pipeline.py``) → the same two-tier
+report layout the mock UI already used (grade badge → Vocal + Facial modality
+cards → per-channel accordions → agreement banner → Claude narrative).
 
 Flow: upload view → click Analyze → progress bar → report view (with a
-"New scan" button to return). Report is grouped as a two-tier hierarchy —
-overall risk grade (A/B/C), then Vocal and Facial modality cards, each
-with a collapsible detail accordion for its per-channel breakdown.
+"New scan" button to return). Any bucket may be empty; that channel is
+reported N/A and fusion renormalizes over the channels that were provided
+(matches ``fuse_scores`` behaviour and the frozen system prompt in
+``claude_client.py``).
 """
 
 from __future__ import annotations
 
 import math
 import os
+import shutil
 import tempfile
-import time
+from pathlib import Path
 from typing import Any
 
 import gradio as gr
 
 from demo.report_pdf import build_report_pdf
+from src.pipeline import run_pipeline
 
 
-# ---------------------------------------------------------------------------
-# Mock data — the only source of truth for what the UI renders. Tweak here
-# to preview different report states without touching layout code.
-# ---------------------------------------------------------------------------
+RECORDING_PROTOCOL = """ParkScreen analyzes **three task-matched recordings** — one bucket per task, all language-neutral. Any bucket may be left empty; that channel is reported as **N/A** and the fusion renormalizes over the channels you did provide.
 
-MOCK_REPORT: dict[str, Any] = {
-    "risk_grade": "B",                   # A (low) | B (moderate) | C (elevated)
-    "fused_score": 0.68,                 # 0–1
-    "modalities": {
-        "vocal": {
-            "score": 0.70,
-            "weight": 0.85,              # weight in overall fused score
-            "summary": "Speech channels show mild changes consistent with early phonatory instability.",
-            "channels": {
-                "phonation": {
-                    "status": "ok",       # ok | na_off_task | low_signal
-                    "score": 0.72,
-                    "confidence": 0.81,
-                    "weight": 0.59,       # weight within Vocal
-                    "note": "Mildly elevated jitter; reduced HNR",
-                },
-                "ddk": {
-                    "status": "ok",
-                    "score": 0.65,
-                    "confidence": 0.74,
-                    "weight": 0.41,
-                    "note": "Slowed rate; mild timing irregularity",
-                },
-            },
-        },
-        "facial": {
-            "score": 0.54,
-            "weight": 0.15,
-            "summary": "Reduced smile expressivity; blink rate and head motion within normal range.",
-            "channels": {
-                "smile": {
-                    "status": "ok",
-                    "score": 0.54,
-                    "confidence": 0.62,
-                    "weight": 1.00,
-                    "note": "Reduced AU12 amplitude on smile cue",
-                },
-            },
-        },
-    },
-    "agreement": "partial",             # agree | partial | disagree
-    "narrative": """### Key observations
-
-**Phonation.** Sustained-vowel analysis shows mildly elevated jitter (local: 1.4%) and a reduced harmonics-to-noise ratio (HNR: 12.3 dB), consistent with early phonatory instability. F0 range is compressed relative to age-matched controls.
-
-**Articulation (DDK).** /pa-ta-ka/ repetition rate is 5.2 syllables/sec (age-adjusted expected: 6.0–7.0). Inter-syllable interval coefficient of variation is 0.18, indicating mild timing irregularity. Peak amplitude is stable across the utterance.
-
-**Facial dynamics.** Smile-classifier score is moderate (0.54). AU12 (lip-corner puller) amplitude on the smile cue is 0.28, below the healthy-control median. Blink rate and head movement fall within normal ranges.
-
-### Consistency
-
-Speech channels (phonation, DDK) agree. Facial channel is weaker but directionally consistent.
-
-### Recommended next steps
-
-- Consider follow-up assessment with a neurologist or movement-disorder specialist.
-- Repeat the same task set in 3–6 months to track any longitudinal change.
-""",
-}
-
-
-RECORDING_PROTOCOL = """Record a **single video** containing these tasks, separated by brief pauses:
-
-1. **Sustained /a/** — hold the vowel steady for ~5 seconds.
-2. **Rapid /pa-ta-ka/** — repeat as fast and evenly as you can for ~5 seconds.
-3. **Face clearly visible** throughout, with a brief neutral → smile → neutral sequence toward the end.
-
-All tasks are language-neutral.
+1. **Sustained vowels /i/, /o/, /u/** — up to 3 reps per vowel, ~3–5 s each, steady pitch, comfortable loudness. Audio only. Name files as `<label>_<VOWEL><REP>.<ext>`, e.g. `HC_I1.m4a`, `PD_O2.wav`, `me_U3.mp3` — the pipeline groups reps by vowel and averages within each vowel before combining. At least one file from {I, O, U} is required to score phonation.
+2. **Rapid /pa-ta-ka/ repetition** — 1+ reps of ~5 s each, as fast and evenly as you can. Audio only. Features are averaged across reps.
+3. **Smile ×3 alternating with neutral face** — 8–12 s total per clip, each smile phase ~2–3 s + neutral ~1–2 s between. Face clearly visible, per the Islam 2023 protocol. Video with audio ok (audio is ignored). Multiple clips accepted; the pipeline max-pools the classifier score and takes the hypomimia summary from the selected clip.
 """
+
+
+VOWEL_INSTRUCTIONS = (
+    "**Sustained vowels /i/, /o/, /u/** — up to 3 reps per vowel, ~3–5 s each.  "
+    "Filenames must end with the vowel letter + rep number (e.g. `HC_I1.m4a`, `me_O2.wav`, `PD_U3.mp3`) — "
+    "the pipeline uses the letter to group reps. At least one of {I, O, U} required."
+)
+
+PATAKA_INSTRUCTIONS = (
+    "**Rapid /pa-ta-ka/ repetition** — 1+ reps of ~5 s each, as fast and evenly as you can. "
+    "Multiple files are averaged. Any audio format."
+)
+
+SMILE_INSTRUCTIONS = (
+    "**Smile ×3 alternating with neutral face** — 8–12 s per clip. Face clearly visible. "
+    "Video only. Multiple clips → max-pool across clips."
+)
 
 
 DISCLAIMER = (
@@ -124,16 +75,6 @@ GRADE_LABELS = {
     "B": "Moderate likelihood of features consistent with PD",
     "C": "Elevated likelihood of features consistent with PD",
 }
-
-
-PIPELINE_STAGES = [
-    ("Extracting audio", 0.5),
-    ("Segmenting tasks", 0.5),
-    ("Analyzing phonation", 0.7),
-    ("Analyzing articulation (DDK)", 0.7),
-    ("Analyzing facial dynamics", 0.8),
-    ("Generating report", 0.8),
-]
 
 
 # ---------------------------------------------------------------------------
@@ -256,28 +197,314 @@ def render_agreement(report: dict[str, Any]) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Pipeline result → UI report dict mapping
+# ---------------------------------------------------------------------------
+
+def _grade_from_score(fused: float) -> str:
+    """Bucket the fused probability into an A/B/C grade.
+
+    Thresholds mirror ``_score_severity`` (low/moderate/elevated) so the grade
+    letter and the modality-card donut colour land in the same bin.
+    """
+    if fused < 0.4:
+        return "A"
+    if fused < 0.7:
+        return "B"
+    return "C"
+
+
+def _agreement_label(agreement: dict[str, bool | None]) -> str:
+    """Map ``fuse_scores`` agreement dict → three-state UI label.
+
+    - both flags True (or one True + one undefined) → agree
+    - both flags False → disagree
+    - anything else (one True + one False, or both undefined) → partial
+    """
+    speech = agreement["speech_channels_agree"]
+    facial = agreement["facial_agrees_with_speech"]
+    votes = [x for x in (speech, facial) if x is not None]
+    if not votes:
+        return "partial"
+    if all(votes):
+        return "agree"
+    if not any(votes):
+        return "disagree"
+    return "partial"
+
+
+def _phonation_note(features: dict[str, float] | None) -> str:
+    """Short auto-note from the interpretable phonation features."""
+    if not features:
+        return "No phonation features extracted."
+    j = features.get("jitter_local", 0.0) * 100.0        # ratio → percent
+    h = features.get("hnr_mean_db", 0.0)
+    fs = features.get("f0_std_hz", 0.0)
+    return f"jitter {j:.2f}%, HNR {h:.1f} dB, F0 SD {fs:.1f} Hz"
+
+
+def _ddk_note(features: dict[str, float] | None) -> str:
+    if not features:
+        return "No DDK features extracted."
+    rate = features.get("ddk_rate_hz", 0.0)
+    isi_cv = features.get("isi_cv", 0.0)
+    amp_cv = features.get("amp_cv", 0.0)
+    return f"rate {rate:.2f} syl/s, ISI CV {isi_cv:.2f}, amp CV {amp_cv:.2f}"
+
+
+def _smile_note(summary: dict[str, Any] | None) -> str:
+    if not summary:
+        return "No hypomimia summary."
+    amp = summary.get("AU12_amplitude_on_smile_cue")
+    blink = summary.get("blink_rate_per_min")
+    parts = []
+    if amp is not None:
+        parts.append(f"AU12 peak {amp:.2f}")
+    if blink is not None:
+        parts.append(f"blink {blink:.1f}/min")
+    return ", ".join(parts) if parts else "hypomimia markers unavailable"
+
+
+def _channel_confidence(channel_meta: dict[str, Any] | None, channel: str) -> float:
+    """Cheap confidence proxy for the UI card — quantity of input, not model uncertainty."""
+    if channel_meta is None:
+        return 0.0
+    if channel == "phonation":
+        n = int(channel_meta.get("n_files_used", 0))
+        return min(1.0, n / 3.0)
+    if channel == "ddk":
+        n = int(channel_meta.get("n_files", 0))
+        return min(1.0, n / 3.0)
+    if channel == "facial":
+        # Use detection rate of the selected clip as a proxy.
+        selected = channel_meta.get("selected_clip")
+        for c in channel_meta.get("per_clip", []):
+            if c["file"] == selected:
+                return float(c["detection_rate"] or 0.0)
+        return 0.0
+    return 0.0
+
+
+def _map_pipeline_to_report(result: dict) -> dict[str, Any]:
+    """Turn ``run_pipeline`` output into the report dict the UI renders.
+
+    Fields map:
+      - ``risk_grade`` / ``fused_score`` come from ``result['fusion']``.
+      - Modality "vocal" wraps phonation + DDK; its score is the fusion-weight-
+        weighted average of the two present speech channels (or the single one
+        present); its channel weights are renormalized within Vocal.
+      - Modality "facial" wraps the smile channel only.
+      - ``agreement`` is derived from ``fuse_scores`` flags.
+      - ``narrative`` is the Claude markdown (or a placeholder if we skipped
+        the Claude call — should not happen on the UI path).
+    """
+    fusion = result["fusion"]
+    channels_in = result["channels"]
+    meta = result["channel_meta"]
+    w_norm = fusion.get("weights_normalized", {})
+    facial_summary = result.get("facial_summary")
+
+    fused = fusion.get("fused_score")
+    if fused is None:
+        # No channels scored — nothing to render. Caller validates before us,
+        # but keep a safe fallback so the UI doesn't KeyError.
+        return {
+            "risk_grade": "A",
+            "fused_score": 0.0,
+            "modalities": {"vocal": None, "facial": None},
+            "agreement": "partial",
+            "narrative": "No channels could be scored. Check the recording protocol and retry.",
+        }
+
+    # ---- Vocal modality (phonation + DDK) ----
+    phon = channels_in.get("phonation")
+    ddk = channels_in.get("ddk")
+    phon_w_global = w_norm.get("phonation", 0.0)
+    ddk_w_global = w_norm.get("ddk", 0.0)
+    vocal_weight = phon_w_global + ddk_w_global
+
+    vocal_channels: dict[str, Any] = {}
+    if phon is not None:
+        vocal_channels["phonation"] = {
+            "status": "ok",
+            "score": phon["score"],
+            "confidence": _channel_confidence(meta.get("phonation"), "phonation"),
+            "weight": phon_w_global / vocal_weight if vocal_weight else 0.0,
+            "note": _phonation_note(phon.get("features")),
+        }
+    else:
+        vocal_channels["phonation"] = {
+            "status": "na_off_task",
+            "score": 0.0,
+            "confidence": 0.0,
+            "weight": 0.0,
+            "note": (meta.get("phonation", {}) or {}).get("reason") or "No vowel recordings provided.",
+        }
+    if ddk is not None:
+        vocal_channels["ddk"] = {
+            "status": "ok",
+            "score": ddk["score"],
+            "confidence": _channel_confidence(meta.get("ddk"), "ddk"),
+            "weight": ddk_w_global / vocal_weight if vocal_weight else 0.0,
+            "note": _ddk_note(ddk.get("features")),
+        }
+    else:
+        vocal_channels["ddk"] = {
+            "status": "na_off_task",
+            "score": 0.0,
+            "confidence": 0.0,
+            "weight": 0.0,
+            "note": (meta.get("ddk", {}) or {}).get("reason") or "No PATAKA recordings provided.",
+        }
+
+    if vocal_weight > 0:
+        vocal_score = 0.0
+        if phon is not None:
+            vocal_score += (phon_w_global / vocal_weight) * phon["score"]
+        if ddk is not None:
+            vocal_score += (ddk_w_global / vocal_weight) * ddk["score"]
+        vocal_summary_parts = []
+        if phon is not None:
+            vocal_summary_parts.append(f"phonation {phon['score']:.2f}")
+        if ddk is not None:
+            vocal_summary_parts.append(f"DDK {ddk['score']:.2f}")
+        vocal_summary = "Speech channels: " + ", ".join(vocal_summary_parts) + "."
+    else:
+        vocal_score = 0.0
+        vocal_summary = "No speech recordings provided — Vocal channel is N/A."
+
+    vocal_mod = {
+        "score": vocal_score,
+        "weight": vocal_weight,
+        "summary": vocal_summary,
+        "channels": vocal_channels,
+    }
+
+    # ---- Facial modality (smile only) ----
+    facial = channels_in.get("facial")
+    facial_w_global = w_norm.get("facial", 0.0)
+    facial_channels: dict[str, Any] = {}
+    if facial is not None:
+        facial_channels["smile"] = {
+            "status": "ok",
+            "score": facial["score"],
+            "confidence": _channel_confidence(meta.get("facial"), "facial"),
+            "weight": 1.0,
+            "note": _smile_note(facial_summary),
+        }
+        facial_summary_str = f"Smile classifier {facial['score']:.2f}. " + _smile_note(facial_summary) + "."
+    else:
+        facial_channels["smile"] = {
+            "status": "na_off_task",
+            "score": 0.0,
+            "confidence": 0.0,
+            "weight": 0.0,
+            "note": (meta.get("facial", {}) or {}).get("reason") or "No smile video provided.",
+        }
+        facial_summary_str = "No smile video provided — Facial channel is N/A."
+
+    facial_mod = {
+        "score": facial["score"] if facial is not None else 0.0,
+        "weight": facial_w_global,
+        "summary": facial_summary_str,
+        "channels": facial_channels,
+    }
+
+    narrative = result.get("report") or (
+        "_(Claude report unavailable — using structured signals only. See "
+        "`channel_meta.report_error` in the CLI output for details.)_"
+    )
+
+    return {
+        "risk_grade": _grade_from_score(fused),
+        "fused_score": float(fused),
+        "modalities": {"vocal": vocal_mod, "facial": facial_mod},
+        "agreement": _agreement_label(fusion["agreement"]),
+        "narrative": narrative,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Event handlers
 # ---------------------------------------------------------------------------
 
-def analyze(video: str | None, progress: gr.Progress = gr.Progress()):
-    # Mock mode: video is ignored. Add input validation when wiring the real
-    # pipeline in src/pipeline.py.
-    total = len(PIPELINE_STAGES)
-    for i, (desc, dur) in enumerate(PIPELINE_STAGES):
-        progress(i / total, desc=desc)
-        time.sleep(dur)
+def _stage_uploads(files: list | None, dest: Path) -> int:
+    """Copy uploaded files into ``dest`` preserving original filenames.
+
+    Gradio hands us paths in its cache dir; the vowel-filter parses the vowel
+    letter from filename tokens like ``PD_I1.m4a``, so we preserve that here
+    rather than pointing the pipeline at the cache dir directly (safer against
+    any future Gradio filename mangling). Returns the number of files copied.
+    """
+    if not files:
+        return 0
+    dest.mkdir(parents=True, exist_ok=True)
+    n = 0
+    for f in files:
+        # gr.File items are FileData (attribute .name) or a bare string path
+        # depending on gradio version. Normalize.
+        src = getattr(f, "name", None) or (f if isinstance(f, str) else None)
+        if src is None:
+            continue
+        src_path = Path(src)
+        if not src_path.exists():
+            continue
+        shutil.copy2(src_path, dest / src_path.name)
+        n += 1
+    return n
+
+
+def analyze(
+    vowel_files: list | None,
+    pataka_files: list | None,
+    smile_files: list | None,
+    progress: gr.Progress = gr.Progress(),
+):
+    """Stage uploads → ``run_pipeline`` → UI report dict → seven UI updates.
+
+    Returns eight values (matches the ``outputs=[...]`` list on the click
+    handler; the last one is the ``current_report`` state used by the PDF
+    button).
+    """
+    if not any([vowel_files, pataka_files, smile_files]):
+        raise gr.Error("Upload at least one bucket (vowel, PATAKA, or smile) before analyzing.")
+
+    progress(0.05, desc="Staging uploads")
+    workdir = Path(tempfile.mkdtemp(prefix="parkscreen_ui_"))
+    vowel_dir = workdir / "vowel"
+    pataka_dir = workdir / "pataka"
+    smile_dir = workdir / "smile"
+
+    n_vowel = _stage_uploads(vowel_files, vowel_dir)
+    n_pataka = _stage_uploads(pataka_files, pataka_dir)
+    n_smile = _stage_uploads(smile_files, smile_dir)
+
+    progress(0.15, desc=f"Running phonation ({n_vowel} files)")
+    # run_pipeline is blocking; there's no per-channel progress hook to
+    # interpolate between. Nudge the bar between the big stages instead.
+    # Any channel with 0 files is passed as None so run_pipeline reports it
+    # as N/A rather than crashing on an empty directory.
+    result = run_pipeline(
+        vowel_dir=vowel_dir if n_vowel else None,
+        pataka_dir=pataka_dir if n_pataka else None,
+        smile_dir=smile_dir if n_smile else None,
+        call_claude=True,
+    )
+
+    progress(0.9, desc="Rendering report")
+    report = _map_pipeline_to_report(result)
     progress(1.0, desc="Done")
 
     return (
-        gr.update(visible=False),                          # upload_view
-        gr.update(visible=True),                           # report_view
-        render_grade_badge(MOCK_REPORT),                   # grade_html
-        render_modality_card("vocal", MOCK_REPORT["modalities"]["vocal"]),
-        render_channels_of(MOCK_REPORT["modalities"]["vocal"]),
-        render_modality_card("facial", MOCK_REPORT["modalities"]["facial"]),
-        render_channels_of(MOCK_REPORT["modalities"]["facial"]),
-        render_agreement(MOCK_REPORT),                     # agreement_html
-        MOCK_REPORT["narrative"],                          # narrative_md
+        gr.update(visible=False),                                    # upload_view
+        gr.update(visible=True),                                     # report_view
+        render_grade_badge(report),                                  # grade_html
+        render_modality_card("vocal", report["modalities"]["vocal"]),
+        render_channels_of(report["modalities"]["vocal"]),
+        render_modality_card("facial", report["modalities"]["facial"]),
+        render_channels_of(report["modalities"]["facial"]),
+        render_agreement(report),                                    # agreement_html
+        report["narrative"],                                         # narrative_md
+        report,                                                      # current_report state
     )
 
 
@@ -286,19 +513,26 @@ def new_scan():
     return (
         gr.update(visible=True),   # upload_view
         gr.update(visible=False),  # report_view
-        None,                      # video_input (clear)
+        None,                      # vowel_input (clear)
+        None,                      # pataka_input (clear)
+        None,                      # smile_input (clear)
+        None,                      # current_report state (clear)
     )
 
 
-def prepare_pdf_download() -> str:
-    """Render MOCK_REPORT to a PDF in a temp dir and return the path for
-    gr.DownloadButton to serve. Placing the file inside a fresh temp directory
-    (rather than an anonymous temp file) preserves the friendly filename in
-    the browser download dialog."""
+def prepare_pdf_download(current_report: dict[str, Any] | None) -> str:
+    """Render the current session's report to a PDF and return the path.
+
+    The button is only reachable from the report view (visible after Analyze
+    populates ``current_report``), so a null state here means the UI wiring
+    is wrong — surface it loudly instead of exporting a placeholder.
+    """
+    if current_report is None:
+        raise gr.Error("No report to export — analyze a recording first.")
     tmpdir = tempfile.mkdtemp(prefix="parkscreen_")
     path = os.path.join(tmpdir, "parkscreen_report.pdf")
     with open(path, "wb") as f:
-        build_report_pdf(MOCK_REPORT, f)
+        build_report_pdf(current_report, f)
     return path
 
 
@@ -610,16 +844,39 @@ with gr.Blocks(title="ParkScreen") as demo:
     )
 
     # =====================================================================
-    # Upload view
+    # Upload view — three task-matched buckets (see Demo Protocol in CLAUDE.md)
     # =====================================================================
     with gr.Column(visible=True) as upload_view:
-        video_input = gr.Video(
-            label="Upload video",
-            sources=["upload"],
-            height=320,
-        )
-        with gr.Accordion("Recording protocol", open=False):
+        with gr.Accordion("Recording protocol", open=True):
             gr.Markdown(RECORDING_PROTOCOL)
+
+        gr.Markdown("### 1 · Sustained vowels")
+        gr.Markdown(VOWEL_INSTRUCTIONS)
+        vowel_input = gr.File(
+            label="Vowel recordings (audio)",
+            file_count="multiple",
+            file_types=["audio", ".m4a", ".mp3", ".wav", ".flac", ".aac"],
+            height=140,
+        )
+
+        gr.Markdown("### 2 · Rapid /pa-ta-ka/ (PATAKA)")
+        gr.Markdown(PATAKA_INSTRUCTIONS)
+        pataka_input = gr.File(
+            label="PATAKA recordings (audio)",
+            file_count="multiple",
+            file_types=["audio", ".m4a", ".mp3", ".wav", ".flac", ".aac"],
+            height=140,
+        )
+
+        gr.Markdown("### 3 · Smile task")
+        gr.Markdown(SMILE_INSTRUCTIONS)
+        smile_input = gr.File(
+            label="Smile videos",
+            file_count="multiple",
+            file_types=["video", ".mp4", ".mov", ".avi", ".mkv"],
+            height=140,
+        )
+
         analyze_btn = gr.Button("Analyze", variant="primary", size="lg")
 
     # =====================================================================
@@ -649,10 +906,14 @@ with gr.Blocks(title="ParkScreen") as demo:
         narrative_md = gr.Markdown()
         gr.HTML(f'<div class="ps-disclaimer">{DISCLAIMER}</div>')
 
+    # Session-scoped state — the last-produced report dict, used by the PDF
+    # download so it exports what was actually analyzed (not the mock fixture).
+    current_report = gr.State(value=None)
+
     # ---- Wiring ----------------------------------------------------------
     analyze_btn.click(
         fn=analyze,
-        inputs=[video_input],
+        inputs=[vowel_input, pataka_input, smile_input],
         outputs=[
             upload_view,
             report_view,
@@ -663,18 +924,19 @@ with gr.Blocks(title="ParkScreen") as demo:
             facial_detail_html,
             agreement_html,
             narrative_md,
+            current_report,
         ],
     )
 
     new_scan_btn.click(
         fn=new_scan,
         inputs=None,
-        outputs=[upload_view, report_view, video_input],
+        outputs=[upload_view, report_view, vowel_input, pataka_input, smile_input, current_report],
     )
 
     download_btn.click(
         fn=prepare_pdf_download,
-        inputs=None,
+        inputs=[current_report],
         outputs=download_btn,
     )
 

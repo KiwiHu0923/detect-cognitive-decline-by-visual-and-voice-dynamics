@@ -1,0 +1,38 @@
+<clinical_signals>
+  <phonation status="present">
+    pd_probability: 0.613
+    features:
+      jitter_local_percent: 0.425
+      shimmer_local_percent: 3.490
+      hnr_mean_db: 23.10
+      f0_mean_hz: 172.4
+      f0_std_hz: 8.9
+      f0_range_hz: 45.2
+  </phonation>
+  <ddk status="present">
+    pd_probability: 0.881
+    features:
+      ddk_rate_hz: 5.420
+      isi_cv: 0.187
+      amp_cv: 0.336
+      amp_decrement: -0.0230
+  </ddk>
+  <facial status="present">
+    pd_probability: 0.148
+    hypomimia_markers:
+      mean_AU12: 0.150
+      AU12_amplitude_on_smile_cue: 0.280
+      expression_variance: 0.120
+      blink_rate_per_min: 8.400
+      head_movement_std: 0.040
+    detection_rate: 0.93
+    warnings: []
+  </facial>
+  <fusion>
+    fused_pd_probability: 0.704
+    weights_normalized: {phonation: 0.30, ddk: 0.57, facial: 0.13}
+    speech_channels_agree: true
+    facial_agrees_with_speech: false
+    any_flag_for_review: true
+  </fusion>
+</clinical_signals>

@@ -24,6 +24,7 @@ import yaml
 
 from src.vision.aggregate import aggregate
 from src.vision.facial_features import extract_smile_features
+from src.vision.summarize import summarize_facial_features
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -107,6 +108,74 @@ def predict(
         "per_au_active_frames": agg_meta["per_au_active_frames"],
         "zero_filled_columns": agg_meta["zero_filled_columns"],
         "warnings": warnings,
+    }
+
+
+def predict_and_summarize(
+    video_path: str | Path,
+    t0: float | None = None,
+    t1: float | None = None,
+    min_detection_rate: float = 0.80,
+) -> dict:
+    """One OpenFace Docker run → classifier score + hypomimia narrative summary.
+
+    Pipeline uses this on the demo path so a single Docker invocation feeds
+    both the smile-PD classifier (arrays) and ``summarize_facial_features``
+    (raw DataFrame) — the "one OpenFace run per demo" invariant from
+    CLAUDE.md Facial Features. Semantics of the classifier fields match
+    ``predict()`` exactly; ``summary`` is the same JSON schema as calling
+    ``summarize_facial_features`` on the saved CSV, so downstream consumers
+    (llm_fusion.build_claude_context) do not care which entry point produced it.
+    """
+    clf, scaler, columns = _load_artifacts()
+
+    arrays, feat_meta, df = extract_smile_features(
+        video_path, t0=t0, t1=t1, return_dataframe=True
+    )
+    warnings = list(feat_meta["warnings"])
+
+    # Summary is computed on the same DataFrame regardless of the quality gate
+    # — it's narrative colour for the Claude report, useful even when the
+    # classifier withholds a numeric score (Claude can still say "smile
+    # amplitude was low" even if we refuse to quote a PD probability).
+    summary = summarize_facial_features(df)
+
+    if not feat_meta["quality_gate_pass"] or feat_meta["detection_rate"] < min_detection_rate:
+        return {
+            "score": None,
+            "detection_rate": feat_meta["detection_rate"],
+            "quality_gate_pass": False,
+            "features": {},
+            "per_au_active_frames": {},
+            "zero_filled_columns": [],
+            "warnings": warnings + [
+                f"score withheld: detection rate {feat_meta['detection_rate']:.2%} "
+                f"below {min_detection_rate:.0%} threshold"
+            ],
+            "summary": summary,
+        }
+
+    vector, agg_meta = aggregate(arrays, columns)
+    if len(agg_meta["zero_filled_columns"]) >= ZERO_FILL_WARNING_THRESHOLD:
+        n_dead_aus = len(agg_meta["zero_filled_columns"]) // 2
+        warnings.append(
+            f"{n_dead_aus} of 7 AUs never activated in the clip — the smile task "
+            f"may not have been performed as instructed (protocol: smile ×3 alternating "
+            f"with neutral, 8–12 seconds total)"
+        )
+
+    X = scaler.transform(vector.reshape(1, -1))
+    score = float(clf.predict_proba(X)[0, 1])
+
+    return {
+        "score": score,
+        "detection_rate": feat_meta["detection_rate"],
+        "quality_gate_pass": True,
+        "features": {col: float(v) for col, v in zip(columns, vector)},
+        "per_au_active_frames": agg_meta["per_au_active_frames"],
+        "zero_filled_columns": agg_meta["zero_filled_columns"],
+        "warnings": warnings,
+        "summary": summary,
     }
 
 
