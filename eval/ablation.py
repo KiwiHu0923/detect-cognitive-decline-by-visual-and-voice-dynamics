@@ -1,5 +1,4 @@
-"""Day-3 deliverable: subject-level LOSO ablation on NeuroVoz.
-
+"""
 Produces the table shown to evaluators. Four rows:
   1. Phonation-only
   2. DDK-only

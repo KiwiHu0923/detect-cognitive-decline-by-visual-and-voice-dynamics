@@ -1,0 +1,45 @@
+MIT License
+
+Copyright (c) 2026 Chiwei Hu
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+ADDITIONAL NOTICES
+
+This MIT license applies only to the ParkScreen source code. It does NOT
+grant rights to any datasets or third-party models used or referenced by this
+project. In particular:
+
+- NeuroVoz (Spanish PD voice corpus) is distributed under its own terms via
+  Zenodo. Users of this project who wish to reproduce the training numbers
+  must obtain NeuroVoz directly from Zenodo and accept the NeuroVoz Data Use
+  Agreement. See `docs/DATASETS.md`.
+
+- UFNet (ROC-HCI smile-task feature dataset) is distributed under the MIT
+  License by the original authors (AAAI 2025). Users who wish to retrain the
+  facial classifier should obtain the UFNet CSV directly from the ROC-HCI
+  repository. See `docs/DATASETS.md`.
+
+- YouTubePD is used for external validation only, per UFNet's shipped subset.
+  See `docs/DATASETS.md`.
+
+ParkScreen output is a **screening decision aid**, not a clinical diagnosis.
+See `docs/LIMITATIONS.md` for the full framing.
