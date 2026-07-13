@@ -10,7 +10,7 @@ This document catalogs every dataset and third-party model used by ParkScreen, t
 
 ### Citation
 
-- **Paper:** Mendes-Laureano, J., Gómez-García, J.A., Guerrero-López, A. *et al*. NeuroVoz: a Castillian Spanish corpus of parkinsonian speech. *Sci Data* **11**, 1367 (2024). https://doi.org/10.1038/s41597-024-04186-zs41597-024-04186-z
+- **Paper:** Mendes-Laureano, J., Gómez-García, J.A., Guerrero-López, A. *et al*. NeuroVoz: a Castillian Spanish corpus of parkinsonian speech. *Sci Data* **11**, 1367 (2024). https://doi.org/10.1038/s41597-024-04186-z
 - **Data:** Mendes-Laureano, J., Gómez-García, J. A., Guerrero-López, A., Luque-Buzo, E., Arias-Londoño, J. D., Grandas-Pérez, F. J., & Godino Llorente, J. I. (2024). NeuroVoz: a Castillian Spanish corpus of parkinsonian speech (1.0.0) [Data set]. Zenodo. https://doi.org/10.5281/zenodo.10777657
 
 ### License / Data Use Agreement
@@ -56,7 +56,7 @@ Files that consume NeuroVoz data cite the corpus in their module docstrings:
 - **Paper:** Accessible, At-Home Detection of Parkinson's Disease via Multi-task Video Analysis, **AAAI 2025**.
 - **Code and data repository:** ROC-HCI, *UFNet*, GitHub: [`https://github.com/ROC-HCI/UFNet`](https://github.com/ROC-HCI/UFNet). MIT License.
 
-**BibTeX placeholder:**
+**BibTeX:**
 
 ```bibtex
 @article{islam2024accessible,
@@ -107,10 +107,9 @@ Documented in `METHODOLOGY.md` §6 and `train_smile_pd.py` docstring:
 
 ```bibtex
 @article{islam2023smile,
-  author  = {Islam, Md Saiful and et al.},
+  author  = {Islam, Md Saiful and others},
   title   = {Unmasking Parkinson's Disease with Smile: an AI-enabled Screening Framework},
-  journal = {arXiv preprint},
-  volume  = {arXiv:2308.02588},
+  journal = {arXiv preprint arXiv:2308.02588},
   year    = {2023}
 }
 ```
@@ -138,7 +137,7 @@ YouTubePD is a wild-collected dataset of publicly available YouTube clips, relea
 - **Paper:** Accessible, At-Home Detection of Parkinson's Disease via Multi-task Video Analysis, **AAAI 2025**.
 - **Code and data repository:** ROC-HCI, *UFNet*, GitHub: [`https://github.com/ROC-HCI/UFNet`](https://github.com/ROC-HCI/UFNet). MIT License.
 
-**BibTeX placeholder:**
+**BibTeX:**
 
 ```bibtex
 @article{islam2024accessible,
