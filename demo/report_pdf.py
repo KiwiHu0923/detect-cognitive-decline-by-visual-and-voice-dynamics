@@ -206,18 +206,22 @@ STYLES = {
         "dis", fontName="Helvetica", fontSize=8,
         textColor=TEXT_MUTED, leading=12,
     ),
+    "narrative_h2": ParagraphStyle(
+        "nh2", fontName="Helvetica-Bold", fontSize=13,
+        textColor=TEXT, leading=17, spaceBefore=16, spaceAfter=6,
+    ),
     "narrative_h": ParagraphStyle(
         "nh", fontName="Helvetica-Bold", fontSize=11,
-        textColor=TEXT, leading=14, spaceBefore=8, spaceAfter=4,
+        textColor=TEXT, leading=14, spaceBefore=10, spaceAfter=4,
     ),
     "narrative_p": ParagraphStyle(
         "np", fontName="Helvetica", fontSize=10,
-        textColor=TEXT, leading=14, spaceAfter=4,
+        textColor=TEXT, leading=14, spaceAfter=6,
     ),
     "narrative_li": ParagraphStyle(
         "nli", fontName="Helvetica", fontSize=10,
         textColor=TEXT, leading=14,
-        leftIndent=14, bulletIndent=4,
+        leftIndent=14, bulletIndent=4, spaceAfter=2,
     ),
 }
 
@@ -351,30 +355,71 @@ def _agreement_section(report: dict[str, Any]):
     return tbl
 
 
+def _md_inline_to_rl(text: str) -> str:
+    """Convert markdown inline syntax to reportlab inline XML.
+
+    Handles **bold**, *italic*, `code`, and escapes bare < and & that would
+    otherwise trip reportlab's XML parser. Order matters: bold first (so
+    ``**`` is consumed before the single-``*`` italic pass), then italic,
+    then code, then XML escape of leftover reserved characters.
+    """
+    # Escape XML-hostile chars first (but leave our own tags alone by escaping
+    # BEFORE inserting them — we insert after this pass).
+    text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    # Bold
+    text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text)
+    text = re.sub(r"__(.+?)__", r"<b>\1</b>", text)
+    # Italic — single * pair, but only when flanked by non-word chars (or edges)
+    # to avoid matching things like /i/ or the ** we already replaced.
+    text = re.sub(r"(?<![*\w])\*(?!\*)([^*]+?)\*(?!\*)(?![*\w])", r"<i>\1</i>", text)
+    # Inline code — monospace
+    text = re.sub(r"`([^`]+)`", r"<font face='Courier'>\1</font>", text)
+    return text
+
+
 def _narrative_flowables(markdown_text: str):
-    """Tiny MD → reportlab converter: ### headers, **bold**, - bullets, paragraphs."""
+    """Markdown → reportlab flowables.
+
+    Handles ``## H2`` (Claude's main section markers), ``### H3``,
+    ``**bold**``, ``*italic*``, ``` `code` ```, ``- bullet``, ``* bullet``,
+    horizontal rules (skipped), and normal paragraphs. This is the writer
+    for the "Clinical narrative" section of the PDF; the ``##`` handling is
+    load-bearing since every Claude-generated section header uses it.
+    """
     flow = []
     lines = markdown_text.strip().split("\n")
     bullets: list[str] = []
 
     def flush_bullets():
         for b in bullets:
-            content = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", b)
-            flow.append(Paragraph(f"• {content}", STYLES["narrative_li"]))
+            flow.append(Paragraph(f"• {_md_inline_to_rl(b)}", STYLES["narrative_li"]))
         bullets.clear()
 
     for line in lines:
+        stripped = line.strip()
+
+        # Horizontal rules — skip entirely
+        if stripped in ("---", "***", "___"):
+            flush_bullets()
+            continue
+
         if line.startswith("### "):
             flush_bullets()
-            flow.append(Paragraph(line[4:], STYLES["narrative_h"]))
-        elif line.startswith("- "):
+            flow.append(Paragraph(_md_inline_to_rl(line[4:]), STYLES["narrative_h"]))
+        elif line.startswith("## "):
+            flush_bullets()
+            flow.append(Paragraph(_md_inline_to_rl(line[3:]), STYLES["narrative_h2"]))
+        elif line.startswith("# "):
+            # Treat H1 like H2 (Claude reports rarely emit it, but be safe)
+            flush_bullets()
+            flow.append(Paragraph(_md_inline_to_rl(line[2:]), STYLES["narrative_h2"]))
+        elif line.startswith("- ") or line.startswith("* "):
             bullets.append(line[2:])
         elif line.strip() == "":
             flush_bullets()
         else:
             flush_bullets()
-            content = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", line)
-            flow.append(Paragraph(content, STYLES["narrative_p"]))
+            flow.append(Paragraph(_md_inline_to_rl(line), STYLES["narrative_p"]))
     flush_bullets()
     return flow
 

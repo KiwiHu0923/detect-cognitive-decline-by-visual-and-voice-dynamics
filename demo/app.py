@@ -23,33 +23,92 @@ from typing import Any
 
 import gradio as gr
 
+import yaml
+
 from demo.report_pdf import build_report_pdf
-from src.pipeline import run_pipeline
+from src.fusion.llm_fusion import build_claude_context, fuse_scores
+from src.fusion.quick_score import _score_ddk, _score_phonation
+from src.pipeline import _score_facial
+from src.report.claude_client import generate_report
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
-RECORDING_PROTOCOL = """ParkScreen analyzes **three task-matched recordings** — one bucket per task, all language-neutral. Any bucket may be left empty; that channel is reported as **N/A** and the fusion renormalizes over the channels you did provide.
+VOWEL_TAB_INTRO = """**Sustained vowel recordings** — used to extract phonation features (jitter, shimmer, HNR, F0 stability) that reflect voice-quality perturbations characteristic of Parkinson's disease.
 
-1. **Sustained vowels /i/, /o/, /u/** — up to 3 reps per vowel, ~3–5 s each, steady pitch, comfortable loudness. Audio only. Name files as `<label>_<VOWEL><REP>.<ext>`, e.g. `HC_I1.m4a`, `PD_O2.wav`, `me_U3.mp3` — the pipeline groups reps by vowel and averages within each vowel before combining. At least one file from {I, O, U} is required to score phonation.
-2. **Rapid /pa-ta-ka/ repetition** — 1+ reps of ~5 s each, as fast and evenly as you can. Audio only. Features are averaged across reps.
-3. **Smile ×3 alternating with neutral face** — 8–12 s total per clip, each smile phase ~2–3 s + neutral ~1–2 s between. Face clearly visible, per the Islam 2023 protocol. Video with audio ok (audio is ignored). Multiple clips accepted; the pipeline max-pools the classifier score and takes the hypomimia summary from the selected clip.
+- Say each vowel **steadily** for **~3–5 seconds** per recording
+- Use a **comfortable pitch and loudness** — no shouting, no whispering
+- Try to hold pitch as **flat and stable** as possible; don't let it drift up or down
+- Take a **full breath first**, then produce a single continuous sound (avoid pausing mid-vowel)
+- Record in a **quiet room** with the mic close to your mouth (~10–15 cm)
+- Upload **up to 3 recordings per vowel**; multiple reps are averaged for a more stable estimate
+- **No filename convention needed** — the sub-section you upload to determines the vowel
+- At least **one recording** from any of {/i/, /o/, /u/} is required to score this channel
 """
 
+VOWEL_I_INSTRUCTIONS = "**Pronounce /i/**. Steady, sustained tone. Up to 3 reps."
+VOWEL_O_INSTRUCTIONS = "**Pronounce /o/**. Steady, sustained tone. Up to 3 reps."
+VOWEL_U_INSTRUCTIONS = "**Pronounce /u/**. Steady, sustained tone. Up to 3 reps."
 
-VOWEL_INSTRUCTIONS = (
-    "**Sustained vowels /i/, /o/, /u/** — up to 3 reps per vowel, ~3–5 s each.  "
-    "Filenames must end with the vowel letter + rep number (e.g. `HC_I1.m4a`, `me_O2.wav`, `PD_U3.mp3`) — "
-    "the pipeline uses the letter to group reps. At least one of {I, O, U} required."
-)
+PATAKA_INSTRUCTIONS = """**Rapid /pa-ta-ka/ repetition** — the canonical clinical DDK (diadochokinetic) task; measures articulatory speed and rhythmic regularity, key markers of the motor-speech signs in Parkinson's disease.
 
-PATAKA_INSTRUCTIONS = (
-    "**Rapid /pa-ta-ka/ repetition** — 1+ reps of ~5 s each, as fast and evenly as you can. "
-    "Multiple files are averaged. Any audio format."
-)
+- Repeat "**pa-ta-ka**" **as fast and evenly as you can** for the full duration of the recording
+- Each recording should be **~5 seconds** long
+- Keep the **rhythm consistent** — try not to speed up, slow down, or pause between syllables
+- Enunciate each of *pa* / *ta* / *ka* clearly — don't blur them together
+- Stay at a **comfortable loudness**; don't shout, but also don't trail off toward the end
+- Take a **full breath first** so you don't run out of air mid-recording
+- Record in a **quiet room** with the mic close to your mouth (~10–15 cm)
+- **1 or more recordings** accepted — multiple reps are averaged
+- Any audio format (m4a, mp3, wav, flac, aac)
+"""
 
-SMILE_INSTRUCTIONS = (
-    "**Smile ×3 alternating with neutral face** — 8–12 s per clip. Face clearly visible. "
-    "Video only. Multiple clips → max-pool across clips."
-)
+SMILE_INSTRUCTIONS = """**Smile ×3 task** — used to extract facial hypomimia markers (reduced facial expressivity is a hallmark of PD). Follows the Islam et al. 2023 protocol used to train the underlying classifier.
+
+**What to record:**
+- **Smile 3 times** during the recording, each smile ~2–3 seconds long
+- Between smiles, **relax to a neutral (resting) face** for ~1–2 seconds each time
+- Pattern: neutral → smile #1 → neutral → smile #2 → neutral → smile #3 → neutral
+- Total clip length: **8–12 seconds**
+
+**How to smile (this matters a lot):**
+- Smile as **dramatically as possible** — a big, wide, "posed for a photo" smile
+- **Show your teeth**; engage the whole face (cheeks lifted, corners of mouth pulled up and outward)
+- **Do NOT do a subtle, closed-lip grin** — the classifier is trained on exaggerated smile onsets
+- Return to a genuinely **neutral, relaxed face** between smiles (no lingering half-smile)
+
+**Framing and environment:**
+- Face must be **clearly visible and well-lit** — position the camera roughly at **eye level**
+- **Avoid backlight** (do not sit with a window behind you); light source should be in front
+- Whole face should be in frame from **forehead to chin**, roughly centred
+- Keep your **head roughly still** during the recording — no tilting or turning
+- **Remove glasses** if possible (they can interfere with blink / AU detection)
+- Remove hats or anything that shadows the eyes or mouth
+
+**File requirements:**
+- **Video format only** (mp4, mov, avi, mkv)
+- Multiple clips accepted — the classifier score is **max-pooled** across clips, and the hypomimia summary is taken from the best-scoring clip
+- Recommend recording **2–3 separate clips** and uploading all of them (increases robustness)
+"""
+
+# Example recordings shown under each task (see docs/DATASETS.md — self-recorded HC volunteer)
+EXAMPLE_I_PATH = "data/samples/hc_demo/vowel/HC_I1.m4a"
+EXAMPLE_O_PATH = "data/samples/hc_demo/vowel/HC_O1.m4a"
+EXAMPLE_U_PATH = "data/samples/hc_demo/vowel/HC_U1.m4a"
+EXAMPLE_PATAKA_PATH = "data/samples/hc_demo/pataka/HC_PATAKA1.m4a"
+EXAMPLE_SMILE_PATH = "data/samples/hc_demo/smile/smile-instruction.gif"
+
+
+OVERVIEW = """**What is ParkScreen?** ParkScreen combines three complementary signals to estimate a screening probability of Parkinson's disease from short at-home recordings — no clinician needed to record, no diagnostic claim made.
+
+**Three tasks, three signals.** You provide (1) sustained vowels /i/, /o/, /u/ for **voice quality** (jitter, shimmer, HNR), (2) rapid /pa-ta-ka/ repetition for **articulatory speed and rhythm regularity**, and (3) a short smile-task video for **facial expressivity** (hypomimia). Each channel is scored by a small, interpretable classifier trained on published PD corpora — NeuroVoz for speech, UFNet for the smile task.
+
+**How the fusion works.** The three per-channel probabilities are combined via AUC-excess weighting, then handed to Claude Opus 4.7 as structured evidence to synthesize into a clinical-style report. If a channel is missing or fails a quality gate, the fusion renormalizes over the remaining channels — nothing is silently reconciled.
+
+**Validation.** Subject-level leave-one-subject-out on **49 PD × 46 age-matched controls**: speech-only fusion AUC **0.758**. Facial classifier in-distribution AUROC **0.812**.
+
+**Important.** ParkScreen is a **screening decision-aid, not a diagnosis**. Every report carries the diagnostic disclaimer and a training-distribution caveat (all PD training subjects were medicated).
+"""
 
 
 DISCLAIMER = (
@@ -58,6 +117,24 @@ DISCLAIMER = (
     "It is not a substitute for evaluation by a qualified healthcare "
     "professional and must not be used for self-diagnosis."
 )
+
+
+def _processing_html(percent: int, stage: str) -> str:
+    """Render the processing-view HTML shown during analyze().
+
+    ``percent`` is 0–100; ``stage`` is the short label displayed above the
+    progress bar. Called from ``analyze()`` at each staged yield.
+    """
+    percent = max(0, min(100, int(percent)))
+    return f"""
+<div class="ps-processing__spinner">⚙️</div>
+<div class="ps-processing__title">{stage}</div>
+<div class="ps-progressbar">
+  <div class="ps-progressbar__fill" style="width:{percent}%"></div>
+</div>
+<div class="ps-processing__percent">{percent}%</div>
+<div class="ps-processing__sub">Typically 30–90 seconds. Please don't close this tab.</div>
+"""
 
 
 CHANNEL_LABELS = {
@@ -427,13 +504,22 @@ def _map_pipeline_to_report(result: dict) -> dict[str, Any]:
 # Event handlers
 # ---------------------------------------------------------------------------
 
-def _stage_uploads(files: list | None, dest: Path) -> int:
-    """Copy uploaded files into ``dest`` preserving original filenames.
+def _stage_uploads(
+    files: list | None,
+    dest: Path,
+    rename_prefix: str | None = None,
+) -> int:
+    """Copy uploaded files into ``dest``.
 
-    Gradio hands us paths in its cache dir; the vowel-filter parses the vowel
-    letter from filename tokens like ``PD_I1.m4a``, so we preserve that here
-    rather than pointing the pipeline at the cache dir directly (safer against
-    any future Gradio filename mangling). Returns the number of files copied.
+    If ``rename_prefix`` is given (e.g. ``"X_I"``), files are renamed to
+    ``X_I1.ext``, ``X_I2.ext``, ... in upload order. This lets the vowel
+    upload widgets skip the ``<group>_<VOWEL><REP>.<ext>`` filename
+    convention entirely — the widget itself signals which vowel it is, and
+    we forge a filename the pipeline's vowel parser can read. Without a
+    ``rename_prefix`` the original filename is preserved (used for PATAKA
+    and smile, where filename is not parsed).
+
+    Returns the number of files copied.
     """
     if not files:
         return 0
@@ -448,63 +534,194 @@ def _stage_uploads(files: list | None, dest: Path) -> int:
         src_path = Path(src)
         if not src_path.exists():
             continue
-        shutil.copy2(src_path, dest / src_path.name)
-        n += 1
+        if rename_prefix:
+            n += 1
+            out_name = f"{rename_prefix}{n}{src_path.suffix}"
+            shutil.copy2(src_path, dest / out_name)
+        else:
+            shutil.copy2(src_path, dest / src_path.name)
+            n += 1
     return n
 
 
 def analyze(
-    vowel_files: list | None,
+    vowel_i_files: list | None,
+    vowel_o_files: list | None,
+    vowel_u_files: list | None,
     pataka_files: list | None,
     smile_files: list | None,
-    progress: gr.Progress = gr.Progress(),
 ):
-    """Stage uploads → ``run_pipeline`` → UI report dict → seven UI updates.
+    """Staged generator that runs the pipeline in-line so each channel's
+    completion can update the processing view's progress bar.
 
-    Returns eight values (matches the ``outputs=[...]`` list on the click
-    handler; the last one is the ``current_report`` state used by the PDF
-    button).
+    Yields tuples of 12 UI updates matching the click handler's ``outputs``
+    list: ``[upload_view, processing_view, report_view, processing_html,
+    grade_html, vocal_card_html, vocal_detail_html, facial_card_html,
+    facial_detail_html, agreement_html, narrative_md, current_report]``.
+
+    On any exception this yields back to the upload view before raising
+    ``gr.Error`` so the user can fix the underlying issue and retry.
     """
-    if not any([vowel_files, pataka_files, smile_files]):
-        raise gr.Error("Upload at least one bucket (vowel, PATAKA, or smile) before analyzing.")
+    if not any([vowel_i_files, vowel_o_files, vowel_u_files, pataka_files, smile_files]):
+        raise gr.Error("Upload at least one recording (vowels, PATAKA, or smile) before analyzing.")
 
-    progress(0.05, desc="Staging uploads")
-    workdir = Path(tempfile.mkdtemp(prefix="parkscreen_ui_"))
-    vowel_dir = workdir / "vowel"
-    pataka_dir = workdir / "pataka"
-    smile_dir = workdir / "smile"
+    keep = gr.update()  # sentinel — leave the target component untouched
 
-    n_vowel = _stage_uploads(vowel_files, vowel_dir)
-    n_pataka = _stage_uploads(pataka_files, pataka_dir)
-    n_smile = _stage_uploads(smile_files, smile_dir)
+    def stage_yield(percent: int, stage: str) -> tuple:
+        """Yield an update that only refreshes the processing_html panel."""
+        return (
+            keep,  # upload_view (unchanged from the initial visibility flip)
+            keep,  # processing_view
+            keep,  # report_view
+            gr.update(value=_processing_html(percent, stage)),
+            keep, keep, keep, keep, keep, keep, keep, keep,  # 8 report components
+            keep,  # download_btn
+        )
 
-    progress(0.15, desc=f"Running phonation ({n_vowel} files)")
-    # run_pipeline is blocking; there's no per-channel progress hook to
-    # interpolate between. Nudge the bar between the big stages instead.
-    # Any channel with 0 files is passed as None so run_pipeline reports it
-    # as N/A rather than crashing on an empty directory.
-    result = run_pipeline(
-        vowel_dir=vowel_dir if n_vowel else None,
-        pataka_dir=pataka_dir if n_pataka else None,
-        smile_dir=smile_dir if n_smile else None,
-        call_claude=True,
+    # Yield #1 — switch to processing view + kick off progress bar at 5%.
+    yield (
+        gr.update(visible=False),  # upload_view
+        gr.update(visible=True),   # processing_view
+        gr.update(visible=False),  # report_view
+        gr.update(value=_processing_html(5, "Staging uploads…")),
+        keep, keep, keep, keep, keep, keep, keep, keep,
+        keep,  # download_btn
     )
 
-    progress(0.9, desc="Rendering report")
-    report = _map_pipeline_to_report(result)
-    progress(1.0, desc="Done")
+    try:
+        # ---------- Stage uploads --------------------------------------
+        workdir = Path(tempfile.mkdtemp(prefix="parkscreen_ui_"))
+        vowel_dir = workdir / "vowel"
+        pataka_dir = workdir / "pataka"
+        smile_dir = workdir / "smile"
 
-    return (
-        gr.update(visible=False),                                    # upload_view
-        gr.update(visible=True),                                     # report_view
-        render_grade_badge(report),                                  # grade_html
+        n_i = _stage_uploads(vowel_i_files, vowel_dir, rename_prefix="X_I")
+        n_o = _stage_uploads(vowel_o_files, vowel_dir, rename_prefix="X_O")
+        n_u = _stage_uploads(vowel_u_files, vowel_dir, rename_prefix="X_U")
+        n_vowel = n_i + n_o + n_u
+        n_pataka = _stage_uploads(pataka_files, pataka_dir)
+        n_smile = _stage_uploads(smile_files, smile_dir)
+
+        # Load fusion config once — mirrors src.pipeline.run_pipeline.
+        cfg = yaml.safe_load((REPO_ROOT / "configs/model.yaml").read_text())
+        weights = cfg["fusion"]["weights"]
+        threshold = float(cfg["fusion"].get("agreement_threshold", 0.30))
+
+        scores: dict[str, float | None] = {"phonation": None, "ddk": None, "facial": None}
+        channels: dict[str, dict | None] = {"phonation": None, "ddk": None, "facial": None}
+        channel_meta: dict[str, dict] = {}
+        facial_summary: dict | None = None
+
+        # ---------- Phonation ------------------------------------------
+        yield stage_yield(15, "Extracting phonation features…")
+        if n_vowel:
+            phon_score, phon_meta = _score_phonation(vowel_dir)
+            scores["phonation"] = phon_score
+            channel_meta["phonation"] = phon_meta
+            if phon_score is not None:
+                channels["phonation"] = {"score": phon_score, "features": phon_meta["features"]}
+
+        # ---------- DDK ------------------------------------------------
+        yield stage_yield(30, "Extracting DDK / articulation features…")
+        if n_pataka:
+            ddk_score, ddk_meta = _score_ddk(pataka_dir)
+            scores["ddk"] = ddk_score
+            channel_meta["ddk"] = ddk_meta
+            if ddk_score is not None:
+                channels["ddk"] = {"score": ddk_score, "features": ddk_meta["features"]}
+
+        # ---------- Facial (long — Docker OpenFace) --------------------
+        yield stage_yield(50, "Extracting facial features (Docker OpenFace — this can take a moment)…")
+        if n_smile:
+            facial_score, facial_meta, summary = _score_facial(smile_dir)
+            scores["facial"] = facial_score
+            channel_meta["facial"] = facial_meta
+            if facial_score is not None:
+                channels["facial"] = {"score": facial_score}
+                facial_summary = summary
+
+        # ---------- Fusion ---------------------------------------------
+        yield stage_yield(80, "Fusing per-channel scores…")
+        fusion_result = fuse_scores(scores, weights, agreement_threshold=threshold)
+        context_str = build_claude_context(channels, facial_summary, fusion_result)
+
+        # ---------- Claude report --------------------------------------
+        yield stage_yield(88, "Generating clinical report with Claude…")
+        report_md: str | None = None
+        if fusion_result["fused_score"] is not None:
+            try:
+                report_md = generate_report(context_str)
+            except Exception as e:
+                channel_meta["report_error"] = f"{type(e).__name__}: {e}"
+
+        # ---------- Render ---------------------------------------------
+        yield stage_yield(96, "Rendering report…")
+        pipeline_result = {
+            "scores": scores,
+            "channels": channels,
+            "channel_meta": channel_meta,
+            "facial_summary": facial_summary,
+            "fusion": fusion_result,
+            "claude_context": context_str,
+            "report": report_md,
+        }
+        report = _map_pipeline_to_report(pipeline_result)
+
+    except Exception as exc:
+        # Yield back to the upload view first, then raise gr.Error so the
+        # toast fires and the UI stays in a retryable state.
+        yield (
+            gr.update(visible=True),   # upload_view
+            gr.update(visible=False),  # processing_view
+            gr.update(visible=False),  # report_view
+            keep,
+            keep, keep, keep, keep, keep, keep, keep, keep,
+            keep,  # download_btn
+        )
+        exc_type = type(exc).__name__
+        exc_str = str(exc)
+        looks_like_docker = (
+            "docker" in exc_str.lower()
+            or "openface" in exc_str.lower()
+            or exc_type == "CalledProcessError"
+        )
+        if looks_like_docker:
+            msg = (
+                "Facial extraction failed — most likely Docker Desktop is not running. "
+                "Open Docker Desktop, wait until the whale icon in the menu bar is steady, "
+                f"then click Analyze again. ({exc_type}: {exc_str[:200]})"
+            )
+        else:
+            msg = f"Analysis failed: {exc_type}: {exc_str[:400]} (see terminal for the full traceback)."
+        raise gr.Error(msg)
+
+    # Pre-generate the PDF before showing the report so the DownloadButton's
+    # value is set to a real file path the moment the user sees the button.
+    # Otherwise DownloadButton needs two clicks: one to run the fn (which sets
+    # value), one to actually download. Pre-setting the value → one click.
+    pdf_dir = tempfile.mkdtemp(prefix="parkscreen_pdf_")
+    pdf_path = os.path.join(pdf_dir, "parkscreen_report.pdf")
+    try:
+        with open(pdf_path, "wb") as f:
+            build_report_pdf(report, f)
+    except Exception:
+        pdf_path = None  # PDF failure shouldn't block the report display
+
+    # Yield #final — success: switch to report view with all content populated.
+    yield (
+        gr.update(visible=False),  # upload_view
+        gr.update(visible=False),  # processing_view
+        gr.update(visible=True),   # report_view
+        keep,                      # processing_html (unchanged)
+        render_grade_badge(report),
         render_modality_card("vocal", report["modalities"]["vocal"]),
         render_channels_of(report["modalities"]["vocal"]),
         render_modality_card("facial", report["modalities"]["facial"]),
         render_channels_of(report["modalities"]["facial"]),
-        render_agreement(report),                                    # agreement_html
-        report["narrative"],                                         # narrative_md
-        report,                                                      # current_report state
+        render_agreement(report),
+        report["narrative"],
+        report,
+        gr.update(value=pdf_path),  # download_btn — pre-set so single click downloads
     )
 
 
@@ -512,11 +729,15 @@ def new_scan():
     """Return the UI to the upload view, clearing any prior report state."""
     return (
         gr.update(visible=True),   # upload_view
+        gr.update(visible=False),  # processing_view (defensive; usually already hidden)
         gr.update(visible=False),  # report_view
-        None,                      # vowel_input (clear)
+        None,                      # vowel_i_input (clear)
+        None,                      # vowel_o_input (clear)
+        None,                      # vowel_u_input (clear)
         None,                      # pataka_input (clear)
         None,                      # smile_input (clear)
         None,                      # current_report state (clear)
+        gr.update(value=None),     # download_btn — clear stale PDF path
     )
 
 
@@ -542,6 +763,13 @@ def prepare_pdf_download(current_report: dict[str, Any] | None) -> str:
 # ---------------------------------------------------------------------------
 
 CSS = """
+/* Reserve scrollbar space so switching between tall/short tabs doesn't
+   shift the horizontally-centred container by the scrollbar width. This
+   is the actual cause of the "frame jumps sideways" symptom on tab switch. */
+html {
+  scrollbar-gutter: stable;
+}
+
 :root {
   --ps-surface: #131c2e;
   --ps-surface-2: #1c2740;
@@ -560,6 +788,10 @@ CSS = """
 .gradio-container {
   font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif;
   color: var(--ps-text);
+  /* width: 100% forces the container to always claim the full 1100px cap;
+     without it the container shrinks to fit the narrowest tab's natural
+     width, which makes tabs appear at different widths on switch. */
+  width: 100% !important;
   max-width: 1100px !important;
   margin-left: auto !important;
   margin-right: auto !important;
@@ -817,6 +1049,96 @@ CSS = """
   margin-top: 20px;
   line-height: 1.5;
 }
+
+/* Fixed-height upload view — locks the Analyze button's vertical position
+   regardless of which tab is active. This is the load-bearing rule; the
+   per-panel min-height below is a backup for older Gradio DOM. */
+.ps-upload-view {
+  min-height: 720px !important;
+  width: 100% !important;
+}
+
+/* High-level project overview shown at the top of the upload view */
+.ps-overview {
+  font-size: 13px;
+  color: var(--ps-text-muted);
+  line-height: 1.6;
+  padding: 8px 4px 20px 4px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--ps-border);
+}
+.ps-overview p {
+  margin: 0 0 10px 0;
+}
+.ps-overview strong {
+  color: var(--ps-text);
+  font-weight: 600;
+}
+.ps-tab-panel {
+  min-height: 520px !important;
+  width: 100% !important;
+}
+
+/* Smile-task example GIF — constrain the rendered image size WITHOUT
+   changing the outer container width (so tab-container stays same width
+   regardless of GIF file dimensions). The parent Column is unchanged. */
+.ps-smile-example {
+  max-width: 480px !important;
+  margin: 0 auto !important;
+}
+.ps-smile-example img {
+  max-height: 320px !important;
+  width: auto !important;
+  margin: 0 auto !important;
+  display: block !important;
+}
+
+/* Processing view (analyze in progress) */
+.ps-processing {
+  padding: 60px 20px 40px;
+  text-align: center;
+  min-height: 400px;
+}
+@keyframes ps-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+.ps-processing__spinner {
+  font-size: 56px;
+  display: inline-block;
+  animation: ps-spin 1.6s linear infinite;
+}
+.ps-processing__title {
+  margin-top: 24px;
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--ps-text);
+}
+.ps-progressbar {
+  margin: 24px auto 8px auto;
+  max-width: 420px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--ps-border);
+  height: 10px;
+  border-radius: 5px;
+  overflow: hidden;
+}
+.ps-progressbar__fill {
+  background: var(--ps-accent);
+  height: 100%;
+  border-radius: 5px;
+  transition: width 0.4s ease;
+}
+.ps-processing__percent {
+  font-size: 13px;
+  color: var(--ps-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.ps-processing__sub {
+  margin-top: 24px;
+  font-size: 13px;
+  color: var(--ps-text-faint);
+}
 """
 
 
@@ -846,38 +1168,95 @@ with gr.Blocks(title="ParkScreen") as demo:
     # =====================================================================
     # Upload view — three task-matched buckets (see Demo Protocol in CLAUDE.md)
     # =====================================================================
-    with gr.Column(visible=True) as upload_view:
-        with gr.Accordion("Recording protocol", open=True):
-            gr.Markdown(RECORDING_PROTOCOL)
+    with gr.Column(visible=True, elem_classes="ps-upload-view") as upload_view:
+        gr.Markdown(OVERVIEW, elem_classes="ps-overview")
+        with gr.Tabs():
+            # --- Tab 1: Sustained vowels ------------------------------
+            with gr.Tab("1 · Sustained vowels"):
+                with gr.Column(elem_classes="ps-tab-panel"):
+                    gr.Markdown(VOWEL_TAB_INTRO)
+                    with gr.Row(equal_height=False):
+                        with gr.Column():
+                            gr.Markdown(VOWEL_I_INSTRUCTIONS)
+                            vowel_i_input = gr.File(
+                                label="Recordings of /i/ (up to 3)",
+                                file_count="multiple",
+                                file_types=["audio", ".m4a", ".mp3", ".wav", ".flac", ".aac"],
+                                height=140,
+                            )
+                            gr.Audio(
+                                value=EXAMPLE_I_PATH,
+                                label="Example (HC volunteer, /i/)",
+                                interactive=False,
+                            )
+                        with gr.Column():
+                            gr.Markdown(VOWEL_O_INSTRUCTIONS)
+                            vowel_o_input = gr.File(
+                                label="Recordings of /o/ (up to 3)",
+                                file_count="multiple",
+                                file_types=["audio", ".m4a", ".mp3", ".wav", ".flac", ".aac"],
+                                height=140,
+                            )
+                            gr.Audio(
+                                value=EXAMPLE_O_PATH,
+                                label="Example (HC volunteer, /o/)",
+                                interactive=False,
+                            )
+                        with gr.Column():
+                            gr.Markdown(VOWEL_U_INSTRUCTIONS)
+                            vowel_u_input = gr.File(
+                                label="Recordings of /u/ (up to 3)",
+                                file_count="multiple",
+                                file_types=["audio", ".m4a", ".mp3", ".wav", ".flac", ".aac"],
+                                height=140,
+                            )
+                            gr.Audio(
+                                value=EXAMPLE_U_PATH,
+                                label="Example (HC volunteer, /u/)",
+                                interactive=False,
+                            )
 
-        gr.Markdown("### 1 · Sustained vowels")
-        gr.Markdown(VOWEL_INSTRUCTIONS)
-        vowel_input = gr.File(
-            label="Vowel recordings (audio)",
-            file_count="multiple",
-            file_types=["audio", ".m4a", ".mp3", ".wav", ".flac", ".aac"],
-            height=140,
-        )
+            # --- Tab 2: PATAKA ----------------------------------------
+            with gr.Tab("2 · Rapid /pa-ta-ka/"):
+                with gr.Column(elem_classes="ps-tab-panel"):
+                    gr.Markdown(PATAKA_INSTRUCTIONS)
+                    pataka_input = gr.File(
+                        label="PATAKA recordings (audio)",
+                        file_count="multiple",
+                        file_types=["audio", ".m4a", ".mp3", ".wav", ".flac", ".aac"],
+                        height=140,
+                    )
+                    gr.Audio(
+                        value=EXAMPLE_PATAKA_PATH,
+                        label="Example (HC volunteer, one PATAKA rep)",
+                        interactive=False,
+                    )
 
-        gr.Markdown("### 2 · Rapid /pa-ta-ka/ (PATAKA)")
-        gr.Markdown(PATAKA_INSTRUCTIONS)
-        pataka_input = gr.File(
-            label="PATAKA recordings (audio)",
-            file_count="multiple",
-            file_types=["audio", ".m4a", ".mp3", ".wav", ".flac", ".aac"],
-            height=140,
-        )
-
-        gr.Markdown("### 3 · Smile task")
-        gr.Markdown(SMILE_INSTRUCTIONS)
-        smile_input = gr.File(
-            label="Smile videos",
-            file_count="multiple",
-            file_types=["video", ".mp4", ".mov", ".avi", ".mkv"],
-            height=140,
-        )
+            # --- Tab 3: Smile task ------------------------------------
+            with gr.Tab("3 · Smile task"):
+                with gr.Column(elem_classes="ps-tab-panel"):
+                    gr.Markdown(SMILE_INSTRUCTIONS)
+                    smile_input = gr.File(
+                        label="Smile videos",
+                        file_count="multiple",
+                        file_types=["video", ".mp4", ".mov", ".avi", ".mkv"],
+                        height=140,
+                    )
+                    gr.Image(
+                        value=EXAMPLE_SMILE_PATH,
+                        label="Example (HC volunteer, smile animation)",
+                        interactive=False,
+                        elem_classes="ps-smile-example",
+                    )
 
         analyze_btn = gr.Button("Analyze", variant="primary", size="lg")
+
+    # =====================================================================
+    # Processing view — shown while analyze() is running. The HTML gets
+    # updated on each yield in analyze() to reflect current stage + %.
+    # =====================================================================
+    with gr.Column(visible=False, elem_classes="ps-processing") as processing_view:
+        processing_html = gr.HTML(_processing_html(0, "Preparing…"))
 
     # =====================================================================
     # Report view
@@ -913,10 +1292,12 @@ with gr.Blocks(title="ParkScreen") as demo:
     # ---- Wiring ----------------------------------------------------------
     analyze_btn.click(
         fn=analyze,
-        inputs=[vowel_input, pataka_input, smile_input],
+        inputs=[vowel_i_input, vowel_o_input, vowel_u_input, pataka_input, smile_input],
         outputs=[
             upload_view,
+            processing_view,
             report_view,
+            processing_html,
             grade_html,
             vocal_card_html,
             vocal_detail_html,
@@ -925,21 +1306,32 @@ with gr.Blocks(title="ParkScreen") as demo:
             agreement_html,
             narrative_md,
             current_report,
+            download_btn,  # PDF path pre-set in final yield → single-click download
         ],
+        show_progress="hidden",  # we render our own progress bar in processing_html via staged yields
     )
 
     new_scan_btn.click(
         fn=new_scan,
         inputs=None,
-        outputs=[upload_view, report_view, vowel_input, pataka_input, smile_input, current_report],
+        outputs=[
+            upload_view,
+            processing_view,
+            report_view,
+            vowel_i_input,
+            vowel_o_input,
+            vowel_u_input,
+            pataka_input,
+            smile_input,
+            current_report,
+            download_btn,
+        ],
     )
 
-    download_btn.click(
-        fn=prepare_pdf_download,
-        inputs=[current_report],
-        outputs=download_btn,
-    )
+    # NOTE: no separate download_btn.click wiring — the PDF is pre-generated in
+    # analyze() and its path is set as download_btn's value in the final yield.
+    # Clicking the button then downloads directly (no round-trip).
 
 
 if __name__ == "__main__":
-    demo.launch(css=CSS, theme=theme)
+    demo.launch(css=CSS, theme=theme, share=True)
