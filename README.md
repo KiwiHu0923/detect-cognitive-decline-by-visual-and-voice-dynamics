@@ -6,6 +6,12 @@ Built for the *Built with Claude: Life Sciences* hackathon (Anthropic × Gladsto
 
 > ⚠️ ParkScreen is a **screening decision aid**, not a clinical diagnostic tool. Any elevated score should be interpreted only as a prompt to seek qualified clinical evaluation. See [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md) before interpreting any output.
 
+<p align="center">
+  <img src="demo/screenshots/pd_demo_report-1.png" alt="ParkScreen example screening report — PD demo case, Grade C, fused 0.70" width="640">
+</p>
+
+*Example output — end-to-end run on the self-recorded PD demo case (Grade C, fused 0.70). Full PDFs + PNG snapshots for all three demo cases (HC Grade A, PD Grade C, NeuroVoz held-out Grade C with facial channel N/A) in [`demo/screenshots/`](demo/screenshots/). Reproduce with `python -m scripts.render_demo_pdfs`.*
+
 ---
 
 ## What ParkScreen Does
