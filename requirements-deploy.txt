@@ -1,0 +1,26 @@
+# Deployment-only pip requirements — subset of requirements.txt.
+# Training / evaluation packages (mlx-whisper, py-feat, mediapipe,
+# imbalanced-learn, openpyxl, tqdm) are excluded because they are not on the
+# runtime demo path. See CLAUDE.md → Deployment for the rationale.
+
+# Speech features
+praat-parselmouth
+scipy
+
+# ML inference
+scikit-learn
+numpy
+pandas
+joblib
+
+# LLM
+anthropic
+
+# UI + PDF export
+gradio
+reportlab
+matplotlib
+
+# Utils
+python-dotenv
+pyyaml

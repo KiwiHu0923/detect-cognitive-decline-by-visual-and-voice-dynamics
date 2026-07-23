@@ -1334,4 +1334,8 @@ with gr.Blocks(title="ParkScreen") as demo:
 
 
 if __name__ == "__main__":
-    demo.launch(css=CSS, theme=theme, share=True)
+    # share=True spins up a Gradio tunnel — fine locally, but on Cloud Run the
+    # tunnel binary can't reach the outbound relay and startup hangs. Dockerfile
+    # sets GRADIO_SHARE=false so the container serves directly on $PORT.
+    share = os.environ.get("GRADIO_SHARE", "true").lower() in ("1", "true", "yes")
+    demo.launch(css=CSS, theme=theme, share=share)

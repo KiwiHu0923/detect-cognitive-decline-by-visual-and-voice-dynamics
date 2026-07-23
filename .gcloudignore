@@ -1,0 +1,47 @@
+# Files excluded from `gcloud run deploy --source .` upload.
+# Keep only what the running container needs at demo time.
+
+# Python bytecode / caches
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Local virtualenv
+.venv/
+venv/
+
+# Raw + processed datasets — never leave the machine (DUA compliance)
+data/raw/
+data/processed/
+data/external/
+# Keep data/samples/hc_demo/ — the UI's example widgets reference those paths
+# (demo/app.py EXAMPLE_*_PATH constants). Exclude the other sample subdirs.
+data/samples/pd_demo/
+data/samples/neurovoz_holdout_demo/
+
+# Training / evaluation artifacts — model .joblib files under eval/models/
+# are needed at runtime, but the rest of eval/ is not.
+eval/results/
+eval/*.py
+notebooks/
+
+# Local secrets
+.env
+.env.local
+*.env
+
+# Dev tooling / VCS
+.git/
+.github/
+.vscode/
+.idea/
+.DS_Store
+
+# Test suite — not needed in production container
+tests/
+
+# Docs — huge and not needed at runtime
+docs/
+*.md
+!README.md

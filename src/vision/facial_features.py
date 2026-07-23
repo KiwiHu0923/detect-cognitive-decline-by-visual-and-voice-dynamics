@@ -21,6 +21,7 @@ under Rosetta 2 emulation — expect ~20-30s per 5-second clip.
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import subprocess
 import tempfile
@@ -37,6 +38,29 @@ QUALITY_GATE_MIN: float = 0.80
 OPENFACE_IMAGE: str = "algebr/openface:latest"
 OPENFACE_BINARY: str = "./build/bin/FeatureExtraction"
 DOCKER_TIMEOUT_SEC: int = 300
+
+
+def _find_local_openface_binary() -> str | None:
+    """Return an absolute path to a directly-callable FeatureExtraction binary,
+    or None if not present. Detects the two "in-container" deploy scenarios
+    (Cloud Run / any container built on top of algebr/openface): the app is
+    already inside a Linux x86 environment with OpenFace installed, so we skip
+    the `docker run` wrapper and call the binary directly.
+
+    Local Mac dev returns None and falls back to the docker-based codepath.
+    """
+    # 1. Explicit override — Dockerfile sets OPENFACE_BIN to the absolute path.
+    if env_path := os.environ.get("OPENFACE_BIN"):
+        if Path(env_path).exists():
+            return env_path
+    # 2. Convention — algebr/openface installs the binary here.
+    conventional = "/home/openface-build/build/bin/FeatureExtraction"
+    if Path(conventional).exists():
+        return conventional
+    # 3. Anywhere on PATH.
+    if which := shutil.which("FeatureExtraction"):
+        return which
+    return None
 
 
 def _cut_segment(
@@ -61,19 +85,35 @@ def _cut_segment(
 
 
 def _run_openface(work_dir: Path, video_name: str) -> Path:
-    """Run OpenFace FeatureExtraction inside Docker; return path to the CSV."""
+    """Run OpenFace FeatureExtraction; return path to the CSV.
+
+    Two modes, auto-detected:
+      • Direct — inside a container that already has OpenFace installed
+        (Cloud Run image, or any image FROM algebr/openface). Skips the
+        `docker run` wrapper because we cannot Docker-in-Docker on Cloud Run.
+      • Docker — local Mac dev. Uses the algebr/openface image via
+        `docker run`, matching the historical developer setup.
+    """
     out_dir = work_dir / "out"
     out_dir.mkdir(exist_ok=True)
-    base_cmd = [
-        "docker", "run", "--rm",
-        "--platform", "linux/amd64",
-        "--entrypoint", "",
-        "-v", f"{work_dir}:/data",
-        OPENFACE_IMAGE,
-        OPENFACE_BINARY,
-        "-f", f"/data/{video_name}",
-        "-out_dir", "/data/out",
-    ]
+    local_binary = _find_local_openface_binary()
+    if local_binary:
+        base_cmd = [
+            local_binary,
+            "-f", str(work_dir / video_name),
+            "-out_dir", str(out_dir),
+        ]
+    else:
+        base_cmd = [
+            "docker", "run", "--rm",
+            "--platform", "linux/amd64",
+            "--entrypoint", "",
+            "-v", f"{work_dir}:/data",
+            OPENFACE_IMAGE,
+            OPENFACE_BINARY,
+            "-f", f"/data/{video_name}",
+            "-out_dir", "/data/out",
+        ]
     # Request AU + pose output. Pose columns (pose_Tx/Ty/Tz) are consumed by
     # `summarize.py` for the head_movement_std hypomimia marker, so `-aus`
     # alone (which drops pose) is not enough on the demo path. Fallback to no
@@ -85,7 +125,18 @@ def _run_openface(work_dir: Path, video_name: str) -> Path:
             check=True, capture_output=True, timeout=DOCKER_TIMEOUT_SEC,
         )
     except subprocess.CalledProcessError:
-        subprocess.run(base_cmd, check=True, capture_output=True, timeout=DOCKER_TIMEOUT_SEC)
+        try:
+            subprocess.run(base_cmd, check=True, capture_output=True, timeout=DOCKER_TIMEOUT_SEC)
+        except subprocess.CalledProcessError as e:
+            # Surface OpenFace's own stderr — otherwise the caller only sees
+            # "returned non-zero exit status N" with no diagnostic detail.
+            stderr = (e.stderr or b'').decode(errors='replace').strip()[-2000:]
+            stdout = (e.stdout or b'').decode(errors='replace').strip()[-500:]
+            raise RuntimeError(
+                f"OpenFace FeatureExtraction failed (exit {e.returncode}).\n"
+                f"stderr: {stderr or '(empty)'}\n"
+                f"stdout: {stdout or '(empty)'}"
+            ) from e
     csv_path = out_dir / (Path(video_name).stem + ".csv")
     if not csv_path.exists():
         raise FileNotFoundError(f"OpenFace produced no CSV at {csv_path}")

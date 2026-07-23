@@ -284,3 +284,83 @@ Full 8-row table + sensitivity analyses + cohort audit in `docs/METHODOLOGY.md` 
 - Venv: `.venv/` at repo root — activate with `source .venv/bin/activate`
 - Claude model: `claude-opus-4-7`
 - Docker: required for OpenFace (`algebr/openface:latest`, run with `--platform linux/amd64` on Apple Silicon)
+
+---
+
+## Deployment (Google Cloud Run)
+
+Public demo runs on Google Cloud Run's Always Free tier. Chosen because HF Spaces removed free Docker Spaces (2026-07) and free micro-VMs elsewhere lack the RAM to run OpenFace.
+
+### Architecture: three-stage self-contained image
+
+Local dev spins up a second container (`docker run algebr/openface ...`) from inside the Python process. Cloud Run does not allow Docker-in-Docker, so the deployed image **bakes OpenFace into the app container itself**.
+
+Naive base of `algebr/openface:latest` fails: it's Ubuntu 14.04 (glibc 2.19) whose apt archives are broken and whose g++ 4.8 can't build any 2026-era scientific Python wheel (all require glibc ≥ 2.28 / C++17). So the runtime base is `python:3.12-slim` (Debian 12, glibc 2.36) with OpenFace bundled in as a self-contained payload from a builder stage.
+
+**Stage 1 — `tools` (debian:bookworm-slim):** Downloads John Van Sickle's statically-linked ffmpeg tarball. Static ffmpeg has no shared-lib dependencies, works anywhere.
+
+**Stage 2 — `openface-bundle` (algebr/openface:latest):** Used **only** to extract files, never as runtime. Copies:
+- `/home/openface-build/build/` — the whole OpenFace tree (binary + models + classifiers + AU predictors)
+- Every non-glibc-family `.so` linked by `FeatureExtraction` (via `ldd`) — this is OpenCV 2.4, Boost 1.54, dlib, TBB, libbsd etc. Excludes libc/libpthread/libm/libdl/librt/libgcc_s/libstdc++/libresolv/libnss_\*/libutil/libanl/libcrypt/libthread_db/libmvec/libnsl/libBrokenLocale — all glibc family. Bundling those causes `symbol lookup error ... undefined symbol: h_errno, version GLIBC_PRIVATE` because `GLIBC_PRIVATE` symbols are strictly versioned across glibc releases; Debian 12's native stubs (backward-compatible for all public symbols) work fine.
+
+**Stage 3 — runtime (python:3.12-slim):**
+- `apt-install patchelf` — one binary needed for RPATH rewrites
+- COPY the Stage 1 ffmpeg + Stage 2 OpenFace bundle
+- `patchelf --set-rpath /openface-libs` on the binary AND every bundled `.so` — the RPATH is baked into the ELF header so only these files use the Ubuntu 14.04 libs. System-wide linker path is untouched.
+- Build-time `ldd` sanity check: `RUN` fails loudly if any dep is `not found`
+- COPY `uv` (Astral) from `ghcr.io/astral-sh/uv:0.5` and `uv venv --python 3.12` — auto-downloads a python-build-standalone Python 3.12 (targets glibc 2.17, compatible with Debian 12's 2.36)
+- `uv pip install -r requirements-deploy.txt` — no version pins needed, all modern wheels install cleanly
+- COPY app code
+
+### Dual-mode facial extraction
+
+`src/vision/facial_features.py::_find_local_openface_binary` detects mode at runtime:
+- **Direct mode** (Cloud Run): reads `OPENFACE_BIN` env var (set by Dockerfile), calls the binary — no `docker run` layer
+- **Docker mode** (local Mac dev): env var absent, falls back to `docker run algebr/openface`, unchanged
+
+This keeps local Mac dev working without any changes.
+
+### Environment / port handling
+
+- `demo/app.py` reads `GRADIO_SHARE` env var — Dockerfile sets `false` (Cloud Run already provides HTTPS; the Gradio share tunnel would hang on Cloud Run's egress)
+- Port is read from `$PORT` (Cloud Run injects it, default 8080) via `sh -c 'GRADIO_SERVER_PORT=${PORT:-8080} python -m demo.app'`
+
+### Runtime files
+
+- `Dockerfile` — three-stage build described above
+- `requirements-deploy.txt` — pruned runtime deps (drops mlx-whisper, py-feat, mediapipe, imbalanced-learn, openpyxl, tqdm)
+- `.gcloudignore` — excludes datasets, notebooks, docs, tests, `.venv/`. **Keeps** `eval/models/` (trained classifiers) and `data/samples/hc_demo/` (UI example widgets)
+
+### Deploy commands
+
+```bash
+# One-time setup
+gcloud services enable run.googleapis.com cloudbuild.googleapis.com secretmanager.googleapis.com
+echo -n "sk-ant-..." | gcloud secrets create anthropic-key --data-file=-
+# Grant Cloud Run runtime SA access to the secret
+PROJECT_NUMBER=$(gcloud projects describe parkscreen --format='value(projectNumber)')
+gcloud secrets add-iam-policy-binding anthropic-key \
+    --member="serviceAccount:${PROJECT_NUMBER}-compute@developer.gserviceaccount.com" \
+    --role="roles/secretmanager.secretAccessor"
+
+# Every deploy (Cloud Build builds from --source . on Google's side)
+gcloud run deploy parkscreen \
+    --source . \
+    --region us-central1 \
+    --memory 4Gi --cpu 2 \
+    --timeout 300 --max-instances 3 \
+    --allow-unauthenticated \
+    --set-secrets ANTHROPIC_API_KEY=anthropic-key:latest
+```
+
+`git push` to GitHub does **not** trigger a deploy — no CI/CD wired. Deploys are manual via the command above.
+
+First build ~10–15 min (Stage 2's `apt-get` on Ubuntu 14.04's `old-releases` mirrors is the bottleneck; can be flaky). Subsequent builds reuse layer cache from prior successful builds — code-only edits typically rebuild in 3–5 min.
+
+### No keepalive workflow — by design
+
+Unlike HF Spaces (binary sleep/awake with 48h threshold), Cloud Run charges per GB-second of container instance time. Frequent keepalive pings would keep the container permanently warm and burn through the 360k GB-second/month free tier. Instead: accept a 10–15s cold start on first request after idle (Cloud Run stays warm ~15 min after last request). For a scheduled demo, manually `curl` the URL once beforehand to pre-warm:
+
+```bash
+curl -s $(gcloud run services describe parkscreen --region us-central1 --format='value(status.url)') > /dev/null
+```
