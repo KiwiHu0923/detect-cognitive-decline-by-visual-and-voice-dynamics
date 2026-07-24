@@ -1,5 +1,7 @@
 # ParkScreen
 
+[![Try the live demo](https://img.shields.io/badge/demo-live-blue)](https://kiwihu0923.github.io/parkscreen/)
+
 **ParkScreen** is a multimodal Parkinson's disease screening decision aid. It fuses three task-matched short recordings — sustained-vowel phonation, rapid /pa-ta-ka/ diadochokinesis, and a smile-task face video — through per-channel classifiers trained on the NeuroVoz (speech) and UFNet (face) corpora, combined via AUC-excess-weighted late fusion. The fused probability, per-channel scores, and channel-agreement flags become structured context for Claude Opus 4.7, which generates a clinical-style Markdown report with mandatory disclaimers and hedged language.
 
 Built for the *Built with Claude: Life Sciences* hackathon (Anthropic × Gladstone × Cerebral Valley), July 7–13 2026. **Development Track.**
