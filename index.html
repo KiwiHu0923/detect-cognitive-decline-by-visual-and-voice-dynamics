@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ParkScreen — Warming up…</title>
+<style>
+  :root {
+    --brand: #2b4b8c;
+    --brand-soft: #e8eef8;
+    --bg: #f7f9fc;
+    --text: #1a1a1a;
+    --muted: #6b7280;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1.5rem;
+  }
+  .splash {
+    max-width: 480px;
+    width: 100%;
+    text-align: center;
+  }
+  h1 {
+    font-size: 2rem;
+    margin: 0 0 0.25rem;
+    color: var(--brand);
+    letter-spacing: -0.02em;
+  }
+  .tagline {
+    color: var(--muted);
+    margin: 0 0 2rem;
+    font-size: 0.95rem;
+  }
+  .spinner {
+    width: 48px;
+    height: 48px;
+    margin: 0 auto 1.5rem;
+    border: 4px solid var(--brand-soft);
+    border-top-color: var(--brand);
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .progress {
+    background: var(--brand-soft);
+    border-radius: 999px;
+    height: 8px;
+    overflow: hidden;
+    margin: 0 0 0.75rem;
+  }
+  .progress__bar {
+    height: 100%;
+    width: 0%;
+    background: var(--brand);
+    transition: width 0.1s linear;
+  }
+  .status {
+    font-size: 0.95rem;
+    margin: 0 0 0.5rem;
+    color: var(--text);
+  }
+  .hint {
+    color: var(--muted);
+    font-size: 0.85rem;
+    line-height: 1.5;
+    margin: 1.75rem 0 0;
+  }
+</style>
+</head>
+<body>
+<div class="splash">
+  <h1>ParkScreen</h1>
+  <p class="tagline">Multimodal Parkinson's screening tool</p>
+  <div class="spinner"></div>
+  <div class="progress"><div class="progress__bar" id="bar"></div></div>
+  <p class="status" id="status">Waking up serverless container…</p>
+  <p class="hint">
+    First-time visits take ~30 seconds while the demo container spins up.
+    This is a hackathon-scale free-tier deployment — subsequent loads will be near-instant.
+  </p>
+</div>
+<script>
+  const CLOUD_RUN_URL = "https://parkscreen-483834671760.us-central1.run.app";
+  const ESTIMATED_SECONDS = 30;
+
+  // Cloud Run's load balancer queues this request during container startup
+  // and only responds once the container is ready — so fetch resolving is
+  // itself the "container is up" signal. `no-cors` sidesteps the fact that
+  // Gradio doesn't set CORS headers; we only need to know that a response
+  // came back, not read its body.
+  fetch(CLOUD_RUN_URL, { mode: "no-cors", cache: "no-store" })
+    .then(() => { window.location.href = CLOUD_RUN_URL; })
+    .catch(() => { setTimeout(() => window.location.reload(), 2000); });
+
+  const bar = document.getElementById("bar");
+  const status = document.getElementById("status");
+  let elapsed = 0;
+  setInterval(() => {
+    elapsed += 0.1;
+    const pct = Math.min(100, (elapsed / ESTIMATED_SECONDS) * 100);
+    bar.style.width = pct + "%";
+    if (elapsed < ESTIMATED_SECONDS) {
+      const remaining = Math.max(1, Math.ceil(ESTIMATED_SECONDS - elapsed));
+      status.textContent = `Estimated ~${remaining}s remaining…`;
+    } else {
+      status.textContent = "Still warming up (larger-than-usual cold start)…";
+    }
+  }, 100);
+</script>
+</body>
+</html>
