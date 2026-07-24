@@ -108,6 +108,8 @@ OVERVIEW = """**What is ParkScreen?** ParkScreen combines three complementary si
 **Validation.** Subject-level leave-one-subject-out on **49 PD × 46 age-matched controls**: speech-only fusion AUC **0.758**. Facial classifier in-distribution AUROC **0.812**.
 
 **Important.** ParkScreen is a **screening decision-aid, not a diagnosis**. Every report carries the diagnostic disclaimer and a training-distribution caveat (all PD training subjects were medicated).
+
+*Note: the demo runs on a serverless container that idles after ~15 minutes of inactivity. If you're the first visitor after an idle period, the initial page load may take a few seconds while the service wakes up — please be patient.*
 """
 
 
@@ -119,20 +121,29 @@ DISCLAIMER = (
 )
 
 
-def _processing_html(percent: int, stage: str) -> str:
+def _processing_html(from_pct: int, to_pct: int, stage: str, duration_s: float = 0.4) -> str:
     """Render the processing-view HTML shown during analyze().
 
-    ``percent`` is 0–100; ``stage`` is the short label displayed above the
-    progress bar. Called from ``analyze()`` at each staged yield.
+    The bar CSS-animates from ``from_pct`` to ``to_pct`` over ``duration_s``
+    seconds — giving visible continuous motion between stage yields instead
+    of discrete jumps. Gradio replaces the whole HTML fragment on each yield
+    (so a CSS `transition` on the bar won't fire — the element is fresh each
+    time); a per-yield `@keyframes` animation is the workaround. The keyframe
+    name is unique per (from, to) so a stale definition can't be picked up.
     """
-    percent = max(0, min(100, int(percent)))
+    from_pct = max(0, min(100, int(from_pct)))
+    to_pct = max(0, min(100, int(to_pct)))
+    anim = f"psfill_{from_pct}_{to_pct}"
     return f"""
+<style>
+@keyframes {anim} {{ from {{ width: {from_pct}%; }} to {{ width: {to_pct}%; }} }}
+</style>
 <div class="ps-processing__spinner">⚙️</div>
 <div class="ps-processing__title">{stage}</div>
 <div class="ps-progressbar">
-  <div class="ps-progressbar__fill" style="width:{percent}%"></div>
+  <div class="ps-progressbar__fill" style="width: {to_pct}%; animation: {anim} {duration_s}s linear forwards;"></div>
 </div>
-<div class="ps-processing__percent">{percent}%</div>
+<div class="ps-processing__percent">{to_pct}%</div>
 <div class="ps-processing__sub">Typically 30–90 seconds. Please don't close this tab.</div>
 """
 
@@ -567,23 +578,37 @@ def analyze(
 
     keep = gr.update()  # sentinel — leave the target component untouched
 
-    def stage_yield(percent: int, stage: str) -> tuple:
-        """Yield an update that only refreshes the processing_html panel."""
+    # Tracks the last progress % emitted so the next yield's CSS keyframe
+    # animation knows where to start from. Wrapped in a list so the nested
+    # `stage_yield` closure can mutate it without a nonlocal declaration.
+    prev_pct = [0]
+
+    def stage_yield(to_pct: int, stage: str, duration_s: float = 0.5) -> tuple:
+        """Yield an update that only refreshes the processing_html panel.
+
+        ``duration_s`` is the estimated time for this stage — the bar
+        CSS-animates from the previous % to ``to_pct`` over that many seconds,
+        so long stages (facial ~20s, Claude ~15s) show continuous motion
+        instead of freezing at one number.
+        """
+        from_pct = prev_pct[0]
+        prev_pct[0] = to_pct
         return (
             keep,  # upload_view (unchanged from the initial visibility flip)
             keep,  # processing_view
             keep,  # report_view
-            gr.update(value=_processing_html(percent, stage)),
+            gr.update(value=_processing_html(from_pct, to_pct, stage, duration_s)),
             keep, keep, keep, keep, keep, keep, keep, keep,  # 8 report components
             keep,  # download_btn
         )
 
     # Yield #1 — switch to processing view + kick off progress bar at 5%.
+    prev_pct[0] = 5
     yield (
         gr.update(visible=False),  # upload_view
         gr.update(visible=True),   # processing_view
         gr.update(visible=False),  # report_view
-        gr.update(value=_processing_html(5, "Staging uploads…")),
+        gr.update(value=_processing_html(0, 5, "Staging uploads…", 1.0)),
         keep, keep, keep, keep, keep, keep, keep, keep,
         keep,  # download_btn
     )
@@ -613,7 +638,7 @@ def analyze(
         facial_summary: dict | None = None
 
         # ---------- Phonation ------------------------------------------
-        yield stage_yield(15, "Extracting phonation features…")
+        yield stage_yield(28, "Extracting phonation features…", 5.0)
         if n_vowel:
             phon_score, phon_meta = _score_phonation(vowel_dir)
             scores["phonation"] = phon_score
@@ -622,7 +647,7 @@ def analyze(
                 channels["phonation"] = {"score": phon_score, "features": phon_meta["features"]}
 
         # ---------- DDK ------------------------------------------------
-        yield stage_yield(30, "Extracting DDK / articulation features…")
+        yield stage_yield(48, "Extracting DDK / articulation features…", 5.0)
         if n_pataka:
             ddk_score, ddk_meta = _score_ddk(pataka_dir)
             scores["ddk"] = ddk_score
@@ -630,8 +655,8 @@ def analyze(
             if ddk_score is not None:
                 channels["ddk"] = {"score": ddk_score, "features": ddk_meta["features"]}
 
-        # ---------- Facial (long — Docker OpenFace) --------------------
-        yield stage_yield(50, "Extracting facial features (Docker OpenFace — this can take a moment)…")
+        # ---------- Facial (long — OpenFace) ---------------------------
+        yield stage_yield(78, "Extracting facial features (OpenFace — this can take a moment)…", 20.0)
         if n_smile:
             facial_score, facial_meta, summary = _score_facial(smile_dir)
             scores["facial"] = facial_score
@@ -641,12 +666,12 @@ def analyze(
                 facial_summary = summary
 
         # ---------- Fusion ---------------------------------------------
-        yield stage_yield(80, "Fusing per-channel scores…")
+        yield stage_yield(85, "Fusing per-channel scores…", 1.0)
         fusion_result = fuse_scores(scores, weights, agreement_threshold=threshold)
         context_str = build_claude_context(channels, facial_summary, fusion_result)
 
         # ---------- Claude report --------------------------------------
-        yield stage_yield(88, "Generating clinical report with Claude…")
+        yield stage_yield(95, "Generating clinical report with Claude…", 15.0)
         report_md: str | None = None
         if fusion_result["fused_score"] is not None:
             try:
@@ -655,7 +680,7 @@ def analyze(
                 channel_meta["report_error"] = f"{type(e).__name__}: {e}"
 
         # ---------- Render ---------------------------------------------
-        yield stage_yield(96, "Rendering report…")
+        yield stage_yield(100, "Rendering report…", 1.0)
         pipeline_result = {
             "scores": scores,
             "channels": channels,

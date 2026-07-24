@@ -347,7 +347,7 @@ gcloud secrets add-iam-policy-binding anthropic-key \
 gcloud run deploy parkscreen \
     --source . \
     --region us-central1 \
-    --memory 4Gi --cpu 2 \
+    --memory 4Gi --cpu 2 --cpu-boost \
     --timeout 300 --max-instances 3 \
     --allow-unauthenticated \
     --set-secrets ANTHROPIC_API_KEY=anthropic-key:latest
@@ -356,6 +356,8 @@ gcloud run deploy parkscreen \
 `git push` to GitHub does **not** trigger a deploy — no CI/CD wired. Deploys are manual via the command above.
 
 First build ~10–15 min (Stage 2's `apt-get` on Ubuntu 14.04's `old-releases` mirrors is the bottleneck; can be flaky). Subsequent builds reuse layer cache from prior successful builds — code-only edits typically rebuild in 3–5 min.
+
+`--cpu-boost` triggers Cloud Run's "startup CPU boost" — the container gets 4× normal CPU during boot, cutting cold start from ~5s to ~2–3s. Free (boost time doesn't count toward monthly quota).
 
 ### No keepalive workflow — by design
 
