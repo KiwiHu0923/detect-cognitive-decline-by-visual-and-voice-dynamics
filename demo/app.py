@@ -1281,7 +1281,7 @@ with gr.Blocks(title="ParkScreen") as demo:
     # updated on each yield in analyze() to reflect current stage + %.
     # =====================================================================
     with gr.Column(visible=False, elem_classes="ps-processing") as processing_view:
-        processing_html = gr.HTML(_processing_html(0, "Preparing…"))
+        processing_html = gr.HTML(_processing_html(0, 0, "Preparing…", 0.4))
 
     # =====================================================================
     # Report view
